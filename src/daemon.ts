@@ -5,6 +5,7 @@ import os from "node:os";
 import { execSync, spawn } from "node:child_process";
 import { ILinkClient } from "./ilink.js";
 import type { PendingMessage, WeixinMessage } from "./types.js";
+import { extractText as sharedExtractText } from "./utils.js";
 
 const WECHAT_DIR = path.join(os.homedir(), ".claude", "wechat");
 const SESSIONS_DIR = path.join(WECHAT_DIR, "sessions");
@@ -109,18 +110,7 @@ function isTypingActive(userId: string): boolean {
   }
 }
 
-function extractText(msg: WeixinMessage): string {
-  const parts: string[] = [];
-  for (const item of msg.item_list) {
-    if (item.type === 1) parts.push(item.text_item.text);
-    else if (item.type === 3 && item.voice_item.text)
-      parts.push(`[语音转文字] ${item.voice_item.text}`);
-    else if (item.type === 2) parts.push("[图片]");
-    else if (item.type === 4) parts.push(`[文件: ${item.file_item.file_name}]`);
-    else if (item.type === 5) parts.push("[视频]");
-  }
-  return parts.join("\n");
-}
+const extractText = sharedExtractText;
 
 function hasTmux(): boolean {
   try {

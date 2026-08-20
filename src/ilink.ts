@@ -14,9 +14,10 @@ import type {
   UploadedMedia,
   WeixinMessage,
 } from "./types.js";
+import { extractText } from "./utils.js";
 
-const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
-const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
+export const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
+export const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
 const BASE_INFO = { channel_version: "1.0.0" } as const;
 const TEXT_LIMIT = 2000;
 const WECHAT_DIR = path.join(os.homedir(), ".claude", "wechat");
@@ -31,24 +32,6 @@ function generateUin(): string {
 
 function generateClientId(): string {
   return `wechat-claude-${crypto.randomBytes(8).toString("hex")}`;
-}
-
-function extractText(msg: WeixinMessage): string {
-  const parts: string[] = [];
-  for (const item of msg.item_list) {
-    if (item.type === 1) {
-      parts.push(item.text_item.text);
-    } else if (item.type === 3 && item.voice_item.text) {
-      parts.push(`[语音转文字] ${item.voice_item.text}`);
-    } else if (item.type === 2) {
-      parts.push("[图片]");
-    } else if (item.type === 4) {
-      parts.push(`[文件: ${item.file_item.file_name}]`);
-    } else if (item.type === 5) {
-      parts.push("[视频]");
-    }
-  }
-  return parts.join("\n");
 }
 
 export class ILinkClient {

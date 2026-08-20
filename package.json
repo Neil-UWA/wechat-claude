@@ -8,6 +8,8 @@
     "wechat-claude": "dist/server.js"
   },
   "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
     "build": "tsc",
     "start": "node dist/server.js",
     "daemon": "node dist/daemon.js",
@@ -21,7 +23,8 @@
     "zod": "^3.25.67"
   },
   "devDependencies": {
+    "@types/node": "^22.15.0",
     "typescript": "^5.8.3",
-    "@types/node": "^22.15.0"
+    "vitest": "^4.1.11"
   }
 }
