@@ -1,0 +1,405 @@
+#!/usr/bin/env node
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { ILinkClient } from "./ilink.js";
+
+const WECHAT_DIR = path.join(os.homedir(), ".claude", "wechat");
+const SESSIONS_DIR = path.join(WECHAT_DIR, "sessions");
+const INBOX_DIR = path.join(WECHAT_DIR, "inbox");
+const TYPING_DIR = path.join(WECHAT_DIR, "typing");
+const DAEMON_PID_FILE = path.join(WECHAT_DIR, "daemon.pid");
+
+function ensureDirs(): void {
+  for (const dir of [WECHAT_DIR, SESSIONS_DIR, INBOX_DIR, TYPING_DIR]) {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+function detectSessionName(): string {
+  const cwd = process.cwd();
+  const worktreeMatch = cwd.match(/\.claude[/\\]worktrees[/\\]([^/\\]+)/);
+  if (worktreeMatch) {
+    const repoPath = cwd
+      .split(/\.claude[/\\]worktrees[/\\]/)[0]
+      .replace(/[/\\]$/, "");
+    return `${path.basename(repoPath)}/${worktreeMatch[1]}`;
+  }
+  const repoName = path.basename(cwd);
+  try {
+    let gitDir = path.join(cwd, ".git");
+    const gitStat = fs.statSync(gitDir);
+    if (!gitStat.isDirectory()) {
+      const content = fs.readFileSync(gitDir, "utf-8").trim();
+      const m = content.match(/gitdir:\s*(.+)/);
+      if (m) gitDir = path.resolve(cwd, m[1]);
+    }
+    const head = fs.readFileSync(path.join(gitDir, "HEAD"), "utf-8").trim();
+    const branchMatch = head.match(/ref:\s*refs\/heads\/(.+)/);
+    if (branchMatch) return `${repoName}:${branchMatch[1]}`;
+  } catch {}
+  return repoName || `session-${process.pid}`;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isDaemonRunning(): boolean {
+  try {
+    const pid = parseInt(
+      fs.readFileSync(DAEMON_PID_FILE, "utf-8").trim(),
+      10
+    );
+    return isProcessAlive(pid);
+  } catch {
+    return false;
+  }
+}
+
+type SessionInfo = {
+  id: string;
+  name: string;
+  cwd: string;
+  pid: number;
+  lastActive: number;
+};
+
+const sessionId = String(process.pid);
+const sessionName = { value: detectSessionName() };
+const client = new ILinkClient();
+
+function register(): void {
+  ensureDirs();
+  const info: SessionInfo = {
+    id: sessionId,
+    name: sessionName.value,
+    cwd: process.cwd(),
+    pid: process.pid,
+    lastActive: Date.now(),
+  };
+  fs.writeFileSync(
+    path.join(SESSIONS_DIR, `${sessionId}.json`),
+    JSON.stringify(info)
+  );
+}
+
+function unregister(): void {
+  try {
+    fs.unlinkSync(path.join(SESSIONS_DIR, `${sessionId}.json`));
+  } catch {}
+  try {
+    fs.unlinkSync(path.join(INBOX_DIR, `${sessionId}.json`));
+  } catch {}
+}
+
+function touchActive(): void {
+  try {
+    const file = path.join(SESSIONS_DIR, `${sessionId}.json`);
+    const info = JSON.parse(fs.readFileSync(file, "utf-8")) as SessionInfo;
+    info.lastActive = Date.now();
+    info.name = sessionName.value;
+    fs.writeFileSync(file, JSON.stringify(info));
+  } catch {
+    register();
+  }
+}
+
+function readInbox(): { id: string; fromUserId: string; text: string; contextToken: string; timestamp: number }[] {
+  const file = path.join(INBOX_DIR, `${sessionId}.json`);
+  try {
+    const raw = fs.readFileSync(file, "utf-8");
+    const msgs = JSON.parse(raw) as { id: string; fromUserId: string; text: string; contextToken: string; timestamp: number }[];
+    if (msgs.length > 0) fs.writeFileSync(file, "[]");
+    return msgs;
+  } catch {
+    return [];
+  }
+}
+
+function peekInbox(): number {
+  const file = path.join(INBOX_DIR, `${sessionId}.json`);
+  try {
+    return (JSON.parse(fs.readFileSync(file, "utf-8")) as unknown[]).length;
+  } catch {
+    return 0;
+  }
+}
+
+function clearTyping(userId: string): void {
+  try {
+    fs.unlinkSync(path.join(TYPING_DIR, userId));
+  } catch {}
+}
+
+function listSessions(): SessionInfo[] {
+  const sessions: SessionInfo[] = [];
+  try {
+    for (const file of fs.readdirSync(SESSIONS_DIR)) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const info = JSON.parse(
+          fs.readFileSync(path.join(SESSIONS_DIR, file), "utf-8")
+        ) as SessionInfo;
+        if (isProcessAlive(info.pid)) {
+          sessions.push(info);
+        } else {
+          fs.unlinkSync(path.join(SESSIONS_DIR, file));
+          try {
+            fs.unlinkSync(path.join(INBOX_DIR, file));
+          } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
+  return sessions.sort((a, b) => a.pid - b.pid);
+}
+
+const server = new McpServer({ name: "wechat-claude", version: "2.0.0" });
+
+server.tool(
+  "wechat_login",
+  "Login to WeChat by scanning a QR code.",
+  {},
+  async () => {
+    if (client.isLoggedIn) {
+      return {
+        content: [
+          { type: "text", text: "Already logged in. Use wechat_logout first." },
+        ],
+      };
+    }
+    try {
+      const qr = await client.getQRCode();
+      return {
+        content: [
+          {
+            type: "text",
+            text: `QR code generated. Ask the user to scan it with WeChat.\n\nQR Code URL: ${qr.qrcode_img_content}\n\nUse wechat_login_poll with qrcode_token="${qr.qrcode}" to check scan status.`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Login failed: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "wechat_login_poll",
+  "Poll QR code scan status until 'confirmed'.",
+  { qrcode_token: z.string().describe("The qrcode token from wechat_login") },
+  async ({ qrcode_token }) => {
+    try {
+      const status = await client.pollQRCodeStatus(qrcode_token);
+      if (
+        status.status === "confirmed" &&
+        status.bot_token &&
+        status.ilink_bot_id &&
+        status.ilink_user_id
+      ) {
+        client.setSession({
+          botToken: status.bot_token,
+          ilinkBotId: status.ilink_bot_id,
+          ilinkUserId: status.ilink_user_id,
+          baseUrl: status.baseurl || "https://ilinkai.weixin.qq.com",
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Login successful! Session: "${sessionName.value}".\n\nNow start the daemon if not running: node <wechat-claude>/dist/daemon.js (or it may already be running via launchd).`,
+            },
+          ],
+        };
+      }
+      if (status.status === "expired") {
+        return {
+          content: [
+            { type: "text", text: "QR code expired. Call wechat_login again." },
+          ],
+        };
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Status: ${status.status}. ${status.status === "scaned" ? "Scanned, awaiting confirmation..." : "Waiting for scan..."} Keep polling.`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Poll failed: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "wechat_get_messages",
+  "Get unread WeChat messages routed to this session by the daemon.",
+  {},
+  async () => {
+    touchActive();
+    const msgs = readInbox();
+    if (msgs.length === 0) {
+      return { content: [{ type: "text", text: "No new messages." }] };
+    }
+    for (const m of msgs) {
+      if (m.contextToken && m.fromUserId) {
+        client.trackContextToken(m.fromUserId, m.contextToken);
+      }
+    }
+    const formatted = msgs.map((m) => {
+      const time = new Date(m.timestamp).toLocaleString("zh-CN");
+      return `[${time}] ${m.fromUserId}:\n${m.text}`;
+    });
+    return {
+      content: [
+        {
+          type: "text",
+          text: `${msgs.length} new message(s):\n\n${formatted.join("\n\n---\n\n")}`,
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
+  "wechat_send_text",
+  "Send a text message to a WeChat user.",
+  {
+    to_user_id: z.string().describe("User ID (e.g. 'xxx@im.wechat')"),
+    text: z.string().describe("Text message to send"),
+  },
+  async ({ to_user_id, text }) => {
+    if (!client.isLoggedIn) {
+      return {
+        content: [{ type: "text", text: "Not logged in." }],
+        isError: true,
+      };
+    }
+    try {
+      clearTyping(to_user_id);
+      await client.sendText(to_user_id, text);
+      await client.sendTyping(to_user_id, false);
+      return {
+        content: [
+          { type: "text", text: `Sent to ${to_user_id} (${text.length} chars).` },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Send failed: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "wechat_set_session_name",
+  "Set a name for this session for WeChat routing ('/s <name> <msg>').",
+  { name: z.string().describe("Session name (e.g. 'fintary', 'review')") },
+  async ({ name }) => {
+    sessionName.value = name;
+    register();
+    return {
+      content: [
+        { type: "text", text: `Session name: "${name}". Route: /s ${name} <msg>` },
+      ],
+    };
+  }
+);
+
+server.tool(
+  "wechat_status",
+  "Check WeChat connection, daemon status, and active sessions. Call at session start to see if WeChat monitoring is available.",
+  {},
+  async () => {
+    const daemonUp = isDaemonRunning();
+    const sessions = listSessions();
+    const inboxCount = peekInbox();
+    const lines = [
+      `Logged in: ${client.isLoggedIn}`,
+      `Daemon running: ${daemonUp}`,
+      `Session: ${sessionName.value}`,
+      `Inbox: ${inboxCount} message(s)`,
+      `Active sessions (${sessions.length}):`,
+      ...sessions.map((s) => {
+        const active = Date.now() - s.lastActive < 120_000 ? "●" : "○";
+        return `  ${active} ${s.name} (pid: ${s.pid})`;
+      }),
+    ];
+    if (!daemonUp) {
+      lines.push(
+        "",
+        "Daemon is NOT running. Start it: node <wechat-claude>/dist/daemon.js"
+      );
+    }
+    if (client.isLoggedIn && daemonUp) {
+      lines.push("", "WeChat is fully operational. Messages are being monitored by the daemon.");
+    }
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  }
+);
+
+server.tool(
+  "wechat_logout",
+  "Disconnect from WeChat and clear session.",
+  {},
+  async () => {
+    client.logout();
+    return {
+      content: [{ type: "text", text: "Logged out. Session cleared." }],
+    };
+  }
+);
+
+async function main(): Promise<void> {
+  ensureDirs();
+  register();
+  process.on("exit", unregister);
+
+  client.tryRestoreSession();
+
+  process.stderr.write(
+    `[wechat-claude] MCP server started. Session: "${sessionName.value}", logged in: ${client.isLoggedIn}\n`
+  );
+
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+main().catch((err) => {
+  process.stderr.write(`Fatal: ${err}\n`);
+  process.exit(1);
+});

@@ -1,0 +1,27 @@
+{
+  "name": "wechat-claude",
+  "version": "2.0.0",
+  "description": "Control Claude Code via WeChat using ilink Bot API",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "wechat-claude": "dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "daemon": "node dist/daemon.js",
+    "daemon:install": "cp com.wechat-claude.daemon.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.wechat-claude.daemon.plist",
+    "daemon:uninstall": "launchctl unload ~/Library/LaunchAgents/com.wechat-claude.daemon.plist && rm ~/Library/LaunchAgents/com.wechat-claude.daemon.plist",
+    "daemon:status": "launchctl list | grep wechat-claude",
+    "daemon:log": "tail -f ~/.claude/wechat/daemon.log"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "@types/node": "^22.15.0"
+  }
+}
