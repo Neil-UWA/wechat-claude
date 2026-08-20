@@ -127,6 +127,30 @@ export type SendMessageRequest = {
   base_info: BaseInfo;
 };
 
+export type GetUploadUrlRequest = {
+  filekey: string;
+  media_type: number;
+  to_user_id: string;
+  rawsize: number;
+  rawfilemd5: string;
+  filesize: number;
+  no_need_thumb: boolean;
+  aeskey: string;
+  base_info: BaseInfo;
+};
+
+export type GetUploadUrlResponse = {
+  upload_param?: string;
+  upload_full_url?: string;
+};
+
+export type UploadedMedia = {
+  downloadParam: string;
+  aesKeyHex: string;
+  fileSize: number;
+  ciphertextSize: number;
+};
+
 export type Session = {
   botToken: string;
   ilinkBotId: string;

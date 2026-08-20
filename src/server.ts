@@ -326,6 +326,51 @@ server.tool(
 );
 
 server.tool(
+  "wechat_send_image",
+  "Send an image file to a WeChat user.",
+  {
+    to_user_id: z.string().describe("User ID (e.g. 'xxx@im.wechat')"),
+    file_path: z.string().describe("Absolute path to the image file"),
+    caption: z.string().optional().describe("Optional text caption to send with the image"),
+  },
+  async ({ to_user_id, file_path, caption }) => {
+    if (!client.isLoggedIn) {
+      return {
+        content: [{ type: "text", text: "Not logged in." }],
+        isError: true,
+      };
+    }
+    try {
+      const fs = await import("node:fs");
+      if (!fs.existsSync(file_path)) {
+        return {
+          content: [{ type: "text", text: `File not found: ${file_path}` }],
+          isError: true,
+        };
+      }
+      clearTyping(to_user_id);
+      await client.sendImage(to_user_id, file_path, caption);
+      await client.sendTyping(to_user_id, false);
+      return {
+        content: [
+          { type: "text", text: `Image sent to ${to_user_id}.` },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Send image failed: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
   "wechat_set_session_name",
   "Set a name for this session for WeChat routing ('/s <name> <msg>').",
   { name: z.string().describe("Session name (e.g. 'fintary', 'review')") },

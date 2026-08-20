@@ -5,15 +5,18 @@ import os from "node:os";
 import type {
   GetConfigResponse,
   GetUpdatesResponse,
+  GetUploadUrlResponse,
   PendingMessage,
   QRCodeResponse,
   QRCodeStatusResponse,
   Session,
   TextItem,
+  UploadedMedia,
   WeixinMessage,
 } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
+const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
 const BASE_INFO = { channel_version: "1.0.0" } as const;
 const TEXT_LIMIT = 2000;
 const WECHAT_DIR = path.join(os.homedir(), ".claude", "wechat");
@@ -305,6 +308,145 @@ export class ILinkClient {
 
       if (!res.ok) throw new Error(`sendmessage failed: ${res.status}`);
     }
+  }
+
+  async uploadMedia(
+    filePath: string,
+    toUserId: string,
+    mediaType: number
+  ): Promise<UploadedMedia> {
+    if (!this.session) throw new Error("Not logged in");
+
+    const plaintext = fs.readFileSync(filePath);
+    const rawsize = plaintext.length;
+    const rawfilemd5 = crypto.createHash("md5").update(plaintext).digest("hex");
+    const aeskey = crypto.randomBytes(16);
+    const filekey = crypto.randomBytes(16).toString("hex");
+    const filesize = Math.ceil((rawsize + 1) / 16) * 16;
+
+    const uploadRes = await fetch(`${this.baseUrl}/ilink/bot/getuploadurl`, {
+      method: "POST",
+      headers: this.authHeaders(),
+      body: JSON.stringify({
+        filekey,
+        media_type: mediaType,
+        to_user_id: toUserId,
+        rawsize,
+        rawfilemd5,
+        filesize,
+        no_need_thumb: true,
+        aeskey: aeskey.toString("hex"),
+        base_info: BASE_INFO,
+      }),
+    });
+    if (!uploadRes.ok)
+      throw new Error(`getuploadurl failed: ${uploadRes.status}`);
+    const uploadData = (await uploadRes.json()) as GetUploadUrlResponse;
+
+    const fullUrl = uploadData.upload_full_url?.trim();
+    let cdnUrl: string;
+    if (fullUrl) {
+      cdnUrl = fullUrl;
+    } else if (uploadData.upload_param) {
+      cdnUrl = `${CDN_BASE_URL}/upload?encrypted_query_param=${encodeURIComponent(uploadData.upload_param)}&filekey=${encodeURIComponent(filekey)}`;
+    } else {
+      throw new Error("getuploadurl returned no upload URL");
+    }
+
+    const cipher = crypto.createCipheriv("aes-128-ecb", aeskey, null);
+    const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+
+    const cdnRes = await fetch(cdnUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: new Uint8Array(ciphertext),
+    });
+    if (!cdnRes.ok)
+      throw new Error(`CDN upload failed: ${cdnRes.status}`);
+
+    const downloadParam = cdnRes.headers.get("x-encrypted-param");
+    if (!downloadParam)
+      throw new Error("CDN response missing x-encrypted-param header");
+
+    return {
+      downloadParam,
+      aesKeyHex: aeskey.toString("hex"),
+      fileSize: rawsize,
+      ciphertextSize: ciphertext.length,
+    };
+  }
+
+  async sendImage(
+    toUserId: string,
+    filePath: string,
+    caption?: string
+  ): Promise<void> {
+    if (!this.session) throw new Error("Not logged in");
+
+    let contextToken = this.contextTokens.get(toUserId);
+    if (!contextToken) {
+      this.loadContextTokens();
+      contextToken = this.contextTokens.get(toUserId);
+    }
+    if (!contextToken) {
+      throw new Error(
+        `No context_token for user ${toUserId}. They must send a message first.`
+      );
+    }
+
+    const uploaded = await this.uploadMedia(filePath, toUserId, 1);
+
+    if (caption) {
+      const textItem: TextItem = { type: 1, text_item: { text: caption } };
+      const textRes = await fetch(`${this.baseUrl}/ilink/bot/sendmessage`, {
+        method: "POST",
+        headers: this.authHeaders(),
+        body: JSON.stringify({
+          msg: {
+            from_user_id: "",
+            to_user_id: toUserId,
+            client_id: generateClientId(),
+            message_type: 2,
+            message_state: 2,
+            context_token: contextToken,
+            item_list: [textItem],
+          },
+          base_info: BASE_INFO,
+        }),
+      });
+      if (!textRes.ok)
+        throw new Error(`sendmessage (caption) failed: ${textRes.status}`);
+    }
+
+    const imageItem = {
+      type: 2,
+      image_item: {
+        media: {
+          encrypt_query_param: uploaded.downloadParam,
+          aes_key: Buffer.from(uploaded.aesKeyHex).toString("base64"),
+          encrypt_type: 1,
+        },
+        mid_size: uploaded.ciphertextSize,
+      },
+    };
+
+    const res = await fetch(`${this.baseUrl}/ilink/bot/sendmessage`, {
+      method: "POST",
+      headers: this.authHeaders(),
+      body: JSON.stringify({
+        msg: {
+          from_user_id: "",
+          to_user_id: toUserId,
+          client_id: generateClientId(),
+          message_type: 2,
+          message_state: 2,
+          context_token: contextToken,
+          item_list: [imageItem],
+        },
+        base_info: BASE_INFO,
+      }),
+    });
+    if (!res.ok) throw new Error(`sendmessage (image) failed: ${res.status}`);
   }
 
   async sendTyping(userId: string, typing: boolean): Promise<void> {
