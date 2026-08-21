@@ -26,6 +26,7 @@ vi.mock("node:os", async () => {
 });
 
 const { WechatRouter } = await import("../router.js");
+const { assignSessionNumbers } = await import("../session-numbers.js");
 
 function makePendingMessage(text: string): PendingMessage {
   return {
@@ -125,6 +126,22 @@ describe("WechatRouter", () => {
       }
     });
 
+    it("puts monitored sessions before unmonitored ones", () => {
+      const router = new WechatRouter("sort-test");
+      clearDir(sessionsDir);
+      createFakeSession("plain", "plain-session", process.pid);
+      createFakeSession("watched", "watched-session", process.ppid);
+
+      const heartbeatDir = path.join(testHome, ".claude", "wechat", "heartbeat");
+      mkdirSync(heartbeatDir, { recursive: true });
+      writeFileSync(path.join(heartbeatDir, "watched"), String(Date.now()));
+
+      const sessions = router.listSessions();
+      expect(sessions[0].id).toBe("watched");
+
+      rmSync(path.join(heartbeatDir, "watched"));
+    });
+
     it("cleans up dead session files", () => {
       const router = new WechatRouter("cleaner");
       clearDir(sessionsDir);
@@ -167,7 +184,8 @@ describe("WechatRouter", () => {
 
     it("/s <number> routes to numbered session", () => {
       const router = new WechatRouter("target");
-      const msg = makePendingMessage("/s 1 hello there");
+      const num = assignSessionNumbers([router.id])[router.id];
+      const msg = makePendingMessage(`/s ${num} hello there`);
       const handled = router.routeMessage(msg, async () => {});
       expect(handled).toBe(false);
 
@@ -278,6 +296,40 @@ describe("WechatRouter", () => {
       expect(existsSync(path.join(inboxDir, "newer.json"))).toBe(false);
 
       rmSync(path.join(heartbeatDir, "older"));
+    });
+
+    it("/sessions marks the default target and shows idle time", () => {
+      const router = new WechatRouter("marker-default");
+      const msg = makePendingMessage("/sessions");
+      let reply = "";
+      router.routeMessage(msg, async (text) => {
+        reply = text;
+      });
+      // Only session → it is the default target.
+      expect(reply).toContain("← 默认接收");
+      expect(reply).toContain("刚刚活跃");
+    });
+
+    it("/sessions collapses long-idle unmonitored sessions to one line, /ls all expands them", () => {
+      const router = new WechatRouter("idle-hider");
+      createFakeSession("idle", "sleepy", process.ppid, Date.now() - 3 * 3_600_000);
+
+      const msg = makePendingMessage("/sessions");
+      let reply = "";
+      router.routeMessage(msg, async (text) => {
+        reply = text;
+      });
+      expect(reply).toContain("闲置（未监控、2 小时以上未活跃）");
+      expect(reply).toContain("sleepy · 3 小时前");
+      expect(reply).not.toContain("目录: path/sleepy");
+
+      const allMsg = makePendingMessage("/ls all");
+      let allReply = "";
+      router.routeMessage(allMsg, async (text) => {
+        allReply = text;
+      });
+      expect(allReply).not.toContain("闲置（未监控、2 小时以上未活跃）");
+      expect(allReply).toContain("sleepy\n   目录: sleepy");
     });
 
     it("/sessions marks monitored sessions", () => {

@@ -2,7 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { isMonitoring } from "./monitoring.js";
+import { assignSessionNumbers } from "./session-numbers.js";
 import type { PendingMessage } from "./types.js";
+import { formatAgo } from "./utils.js";
 
 const WECHAT_DIR = path.join(os.homedir(), ".claude", "wechat");
 const SESSIONS_DIR = path.join(WECHAT_DIR, "sessions");
@@ -186,14 +188,23 @@ export class WechatRouter {
         } catch {}
       }
     } catch {}
-    return sessions.sort((a, b) => a.pid - b.pid);
+    // Monitored sessions first, stable pid order within each group; listing
+    // numbers and "/s <number>" both follow this order.
+    return sessions.sort((a, b) => {
+      const ma = isMonitoring(a.id) ? 1 : 0;
+      const mb = isMonitoring(b.id) ? 1 : 0;
+      if (ma !== mb) return mb - ma;
+      return a.pid - b.pid;
+    });
   }
 
   private findSession(selector: string): SessionInfo | undefined {
     const sessions = this.listSessions();
     const num = parseInt(selector, 10);
-    if (!isNaN(num) && num >= 1 && num <= sessions.length) {
-      return sessions[num - 1];
+    if (!isNaN(num) && String(num) === selector) {
+      const numbers = assignSessionNumbers(sessions.map((s) => s.id));
+      const byNum = sessions.find((s) => numbers[s.id] === num);
+      if (byNum) return byNum;
     }
     const byPid = sessions.find((s) => String(s.pid) === selector);
     if (byPid) return byPid;
@@ -242,21 +253,52 @@ export class WechatRouter {
       return true;
     }
 
-    if (text === "/sessions" || text === "/ls") {
+    const listMatch = text.match(/^\/(?:sessions|ls)(?:\s+(all|全部))?$/);
+    if (listMatch) {
+      const showAll = listMatch[1] !== undefined;
       const sessions = this.listSessions();
       if (sessions.length === 0) {
         sendReply("当前没有活跃的 Claude session。");
         return true;
       }
-      const lines = sessions.map((s, i) => {
-        const active = Date.now() - s.lastActive < 120_000 ? "●" : "○";
-        const monitoring = isMonitoring(s.id) ? " [监控中]" : "";
+      const defaultTarget = this.getDefaultTarget();
+      const now = Date.now();
+      const IDLE_MS = 2 * 60 * 60 * 1000;
+      const isIdle = (s: SessionInfo): boolean =>
+        !showAll &&
+        !isMonitoring(s.id) &&
+        s.id !== defaultTarget?.id &&
+        now - s.lastActive >= IDLE_MS;
+      const labelOf = (s: SessionInfo): string => {
         const dup = sessions.filter((o) => o.name === s.name).length > 1;
-        const label = dup ? `${s.name}#${s.pid}` : s.name;
-        const cwd = path.basename(s.cwd);
-        return `${active} ${i + 1}. ${label}${monitoring}\n   目录: ${cwd}`;
-      });
-      sendReply(`活跃 sessions (${sessions.length}):\n\n${lines.join("\n\n")}\n\n用 /s <编号> <消息> 发送到指定 session\n例: /s 1 你好`);
+        return dup ? `${s.name}#${s.pid}` : s.name;
+      };
+      const numbers = assignSessionNumbers(sessions.map((s) => s.id));
+      const entries = sessions.map((s) => ({ s, num: numbers[s.id] }));
+      const mainLines = entries
+        .filter(({ s }) => !isIdle(s))
+        .map(({ s, num }) => {
+          const active = now - s.lastActive < 120_000 ? "●" : "○";
+          const monitoring = isMonitoring(s.id) ? " [监控中]" : "";
+          const isDefault = s.id === defaultTarget?.id ? " ← 默认接收" : "";
+          const cwd = path.basename(s.cwd);
+          return `${active} ${num}. ${labelOf(s)}${monitoring}${isDefault}\n   目录: ${cwd} · ${formatAgo(now - s.lastActive)}活跃`;
+        });
+      const idleLines = entries
+        .filter(({ s }) => isIdle(s))
+        .map(({ s, num }) => `○ ${num}. ${labelOf(s)} · ${formatAgo(now - s.lastActive)}`);
+      const sections = [
+        `活跃 sessions (${sessions.length}):`,
+        mainLines.join("\n\n"),
+        idleLines.length > 0
+          ? `闲置（未监控、2 小时以上未活跃）:\n${idleLines.join("\n")}\n可发 /close idle 一键清理`
+          : "",
+        [
+          "[监控中] = 正在读取消息 · ← 默认接收 = 不带命令的消息会发到这里",
+          "用 /s <编号|名字|pid> <消息> 发送到指定 session，例: /s 1 你好",
+        ].join("\n"),
+      ].filter(Boolean);
+      sendReply(sections.join("\n\n"));
       return true;
     }
 

@@ -68,16 +68,25 @@ Send these from WeChat to control routing:
 | Command | Description |
 |---------|-------------|
 | `/sessions` or `/ls` | List active Claude Code sessions (`[监控中]` = actively monitoring) |
-| `/s <number> <message>` | Send message to session by list number |
+| `/s <number> <message>` | Send message to session by its number. Numbers are stable for a session's lifetime — they never shift when other sessions open or close (retired numbers aren't reused; numbering resets once all sessions are gone) |
+| `/use <number\|name\|pid>` | Bind your chat to one session: every plain message goes straight to it (survives daemon restarts). `/use off` unbinds; `/use` shows the current binding. Closing the bound session clears the binding automatically |
 | `/s <name> <message>` | Send message to session by name (fuzzy match; if ambiguous, prefers the monitored / most recently active one) |
 | `/s <pid> <message>` | Send message to session by pid (duplicate names are listed as `name#pid`) |
-| `/run [dir] <task>` | Start a new Claude session in tmux to run a task |
+| `/run [--safe] [dir] <task>` | Start a new Claude session in tmux to run a task. The launched session is instructed to send its result back to WeChat. Runs unattended by default (`--dangerously-skip-permissions`); pass `--safe` for `--permission-mode acceptEdits`, where bash commands wait for confirmation at the computer |
+| `/runs` | List running `/run` task sessions |
+| `/stop <name>` | Kill a `/run` task session (names start with `wc-`) |
+| `/close <number\|name\|pid>` | Close a Claude session remotely — terminates its Claude process (and MCP server) and removes it from the list. Unsaved work in that session is lost. If a name matches several sessions it lists them instead of guessing; `/close <name> all` closes all matches, `/close idle` cleans up every unmonitored session idle for 2+ hours. Every close reply ends with a remaining-session summary |
 | `/help` | Show command help |
 | *(no prefix)* | Send to the most recently active **monitoring** session (falls back to most recently active overall) |
 
 Delivery feedback: if a message lands in a session that isn't monitoring its
 inbox, the daemon warns you immediately; if a delivered message is still
 unread after 2 minutes, it sends a reminder.
+
+Incoming images are downloaded and decrypted automatically to
+`~/.claude/wechat/media/` (cleaned up after 7 days); the routed message text
+contains the local path (`[图片: /path/to/file.png]`) so the receiving Claude
+session can open the file directly.
 
 ## MCP Tools
 

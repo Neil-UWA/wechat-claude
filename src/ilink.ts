@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import type {
+  CDNMedia,
   GetConfigResponse,
   GetUpdatesResponse,
   GetUploadUrlResponse,
@@ -14,7 +15,7 @@ import type {
   UploadedMedia,
   WeixinMessage,
 } from "./types.js";
-import { extractText } from "./utils.js";
+import { decryptCdnMedia, extractText, imageExtension } from "./utils.js";
 
 export const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
 export const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
@@ -430,6 +431,24 @@ export class ILinkClient {
       }),
     });
     if (!res.ok) throw new Error(`sendmessage (image) failed: ${res.status}`);
+  }
+
+  // Download and decrypt an incoming CDN media item (e.g. an image the user
+  // sent). Writes the plaintext to outPathBase + sniffed extension and returns
+  // the final path.
+  async downloadMedia(media: CDNMedia, outPathBase: string): Promise<string> {
+    const url = `${CDN_BASE_URL}/download?encrypted_query_param=${encodeURIComponent(media.encrypt_query_param)}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) throw new Error(`CDN download failed: ${res.status}`);
+    const ciphertext = Buffer.from(await res.arrayBuffer());
+    const plaintext = decryptCdnMedia(
+      ciphertext,
+      media.aes_key,
+      media.encrypt_type
+    );
+    const outPath = `${outPathBase}.${imageExtension(plaintext)}`;
+    fs.writeFileSync(outPath, plaintext);
+    return outPath;
   }
 
   async sendTyping(userId: string, typing: boolean): Promise<void> {
