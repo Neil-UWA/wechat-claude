@@ -38,23 +38,28 @@ In any Claude Code session, ask Claude to log in to WeChat:
 
 Claude will generate a QR code URL. Scan it with WeChat to authenticate. The session token is saved to `~/.claude/wechat/session.json` — you won't need to scan again unless the token expires.
 
-### 4. Start Daemon
+### 4. Daemon
+
+The daemon starts automatically: `wechat_status` (called by `/wechat`) and a
+successful login both spawn it if it isn't running. To also survive reboots,
+install it as a macOS launchd service:
 
 ```bash
-node /path/to/wechat-claude/dist/daemon.js &
+# Edit com.wechat-claude.daemon.plist first if your node/script paths differ
+npm run daemon:install
 ```
 
-Or install as a macOS launchd service for auto-start:
+Manual start still works too: `node /path/to/wechat-claude/dist/daemon.js &`.
+The daemon is a singleton (pid-file guard) — extra starts exit immediately.
 
-```bash
-# Edit com.wechat-claude.daemon.plist — update the node and script paths
-cp com.wechat-claude.daemon.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.wechat-claude.daemon.plist
-```
+If the WeChat login expires, the daemon posts a macOS notification and sets a
+flag that `wechat_status` surfaces, so the next `/wechat` prompts a re-login.
 
 ### 5. Enable Monitoring in a Session
 
-Type `/wechat` in any Claude Code session to start monitoring incoming messages.
+Type `/wechat` in any Claude Code session. This starts a persistent watcher
+(`dist/watch-inbox.js`) that reacts to new messages instantly via `fs.watch`
+and maintains a heartbeat marking the session as `[monitoring]`.
 
 ## WeChat Commands
 
@@ -62,10 +67,17 @@ Send these from WeChat to control routing:
 
 | Command | Description |
 |---------|-------------|
-| `/sessions` or `/ls` | List active Claude Code sessions |
-| `/s <number> <message>` | Send message to session by number |
-| `/s <name> <message>` | Send message to session by name (fuzzy match) |
-| *(no prefix)* | Send to the most recently active session |
+| `/sessions` or `/ls` | List active Claude Code sessions (`[监控中]` = actively monitoring) |
+| `/s <number> <message>` | Send message to session by list number |
+| `/s <name> <message>` | Send message to session by name (fuzzy match; if ambiguous, prefers the monitored / most recently active one) |
+| `/s <pid> <message>` | Send message to session by pid (duplicate names are listed as `name#pid`) |
+| `/run [dir] <task>` | Start a new Claude session in tmux to run a task |
+| `/help` | Show command help |
+| *(no prefix)* | Send to the most recently active **monitoring** session (falls back to most recently active overall) |
+
+Delivery feedback: if a message lands in a session that isn't monitoring its
+inbox, the daemon warns you immediately; if a delivered message is still
+unread after 2 minutes, it sends a reminder.
 
 ## MCP Tools
 
@@ -96,12 +108,15 @@ Use `wechat_set_session_name` to set a custom name.
 ├── session.json          # ilink bot token (persisted login)
 ├── context_tokens.json   # shared context tokens (daemon ↔ MCP server)
 ├── daemon.pid            # daemon process ID
-├── daemon.log            # daemon output (when using launchd)
+├── daemon.log            # daemon output
 ├── cursor.txt            # message polling cursor
+├── expired.flag          # present when the WeChat login has expired
 ├── sessions/             # registered Claude Code sessions
 │   └── <pid>.json
 ├── inbox/                # per-session message queues
 │   └── <pid>.json
+├── heartbeat/            # watcher heartbeats (session is [monitoring])
+│   └── <pid>
 └── typing/               # typing indicator state
     └── <userId>
 ```

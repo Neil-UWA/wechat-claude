@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { isMonitoring } from "./monitoring.js";
 import type { PendingMessage } from "./types.js";
 
 const WECHAT_DIR = path.join(os.homedir(), ".claude", "wechat");
@@ -194,15 +195,30 @@ export class WechatRouter {
     if (!isNaN(num) && num >= 1 && num <= sessions.length) {
       return sessions[num - 1];
     }
+    const byPid = sessions.find((s) => String(s.pid) === selector);
+    if (byPid) return byPid;
     const lower = selector.toLowerCase();
-    return (
-      sessions.find((s) => s.name.toLowerCase() === lower) ??
-      sessions.find((s) => s.name.toLowerCase().includes(lower))
-    );
+    const exact = sessions.filter((s) => s.name.toLowerCase() === lower);
+    const pool =
+      exact.length > 0
+        ? exact
+        : sessions.filter((s) => s.name.toLowerCase().includes(lower));
+    if (pool.length === 0) return undefined;
+    if (pool.length === 1) return pool[0];
+    // Ambiguous name: prefer monitored sessions, then the most recently active.
+    const monitored = pool.filter((s) => isMonitoring(s.id));
+    const finalPool = monitored.length > 0 ? monitored : pool;
+    return finalPool.reduce((a, b) => (a.lastActive > b.lastActive ? a : b));
   }
 
+  // Prefer sessions that are actively monitoring their inbox; among those,
+  // pick the most recently active one.
   private getDefaultTarget(): SessionInfo | undefined {
-    return this.listSessions()[0];
+    const sessions = this.listSessions();
+    const monitored = sessions.filter((s) => isMonitoring(s.id));
+    const pool = monitored.length > 0 ? monitored : sessions;
+    if (pool.length === 0) return undefined;
+    return pool.reduce((a, b) => (a.lastActive > b.lastActive ? a : b));
   }
 
   routeMessage(
@@ -210,6 +226,21 @@ export class WechatRouter {
     sendReply: (text: string) => Promise<void>
   ): boolean {
     const text = msg.text.trim();
+
+    if (text === "/help" || text === "/h") {
+      sendReply(
+        [
+          "wechat-claude 命令:",
+          "",
+          "/sessions 或 /ls — 列出活跃的 Claude session",
+          "/s <编号|名字> <消息> — 发送消息到指定 session",
+          "/help — 显示本帮助",
+          "",
+          "不带命令的消息会发送到最近活跃且在监控中的 session。",
+        ].join("\n")
+      );
+      return true;
+    }
 
     if (text === "/sessions" || text === "/ls") {
       const sessions = this.listSessions();
@@ -219,10 +250,21 @@ export class WechatRouter {
       }
       const lines = sessions.map((s, i) => {
         const active = Date.now() - s.lastActive < 120_000 ? "●" : "○";
+        const monitoring = isMonitoring(s.id) ? " [监控中]" : "";
+        const dup = sessions.filter((o) => o.name === s.name).length > 1;
+        const label = dup ? `${s.name}#${s.pid}` : s.name;
         const cwd = path.basename(s.cwd);
-        return `${active} ${i + 1}. ${s.name}\n   目录: ${cwd}`;
+        return `${active} ${i + 1}. ${label}${monitoring}\n   目录: ${cwd}`;
       });
       sendReply(`活跃 sessions (${sessions.length}):\n\n${lines.join("\n\n")}\n\n用 /s <编号> <消息> 发送到指定 session\n例: /s 1 你好`);
+      return true;
+    }
+
+    const bareRoute = text.match(/^\/s(?:\s+(\S+))?\s*$/);
+    if (bareRoute) {
+      sendReply(
+        "用法: /s <编号|名字> <消息>\n例: /s 1 你好\n发送 /sessions 查看可用列表。"
+      );
       return true;
     }
 

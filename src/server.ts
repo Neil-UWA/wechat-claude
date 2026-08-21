@@ -1,17 +1,25 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ILinkClient } from "./ilink.js";
+import { isMonitoring, touchHeartbeat } from "./monitoring.js";
 
 const WECHAT_DIR = path.join(os.homedir(), ".claude", "wechat");
 const SESSIONS_DIR = path.join(WECHAT_DIR, "sessions");
 const INBOX_DIR = path.join(WECHAT_DIR, "inbox");
 const TYPING_DIR = path.join(WECHAT_DIR, "typing");
 const DAEMON_PID_FILE = path.join(WECHAT_DIR, "daemon.pid");
+const EXPIRED_FLAG_FILE = path.join(WECHAT_DIR, "expired.flag");
+const DAEMON_LOG_FILE = path.join(WECHAT_DIR, "daemon.log");
+
+const DAEMON_PATH = fileURLToPath(new URL("./daemon.js", import.meta.url));
+const WATCHER_PATH = fileURLToPath(new URL("./watch-inbox.js", import.meta.url));
 
 function ensureDirs(): void {
   for (const dir of [WECHAT_DIR, SESSIONS_DIR, INBOX_DIR, TYPING_DIR]) {
@@ -63,6 +71,38 @@ function isDaemonRunning(): boolean {
   } catch {
     return false;
   }
+}
+
+// Spawn the daemon detached if it is not already running. The daemon has its
+// own pid-file singleton guard, so a concurrent spawn from another session is
+// harmless. Returns true if the daemon is running when we're done.
+async function ensureDaemonRunning(): Promise<{
+  running: boolean;
+  autoStarted: boolean;
+}> {
+  if (isDaemonRunning()) return { running: true, autoStarted: false };
+  if (!client.isLoggedIn) return { running: false, autoStarted: false };
+  try {
+    const logFd = fs.openSync(DAEMON_LOG_FILE, "a");
+    const child = spawn(process.execPath, [DAEMON_PATH], {
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+    });
+    child.unref();
+    fs.closeSync(logFd);
+  } catch {
+    return { running: false, autoStarted: false };
+  }
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (isDaemonRunning()) return { running: true, autoStarted: true };
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return { running: false, autoStarted: false };
+}
+
+function isLoginExpired(): boolean {
+  return fs.existsSync(EXPIRED_FLAG_FILE);
 }
 
 type SessionInfo = {
@@ -220,11 +260,20 @@ server.tool(
           ilinkUserId: status.ilink_user_id,
           baseUrl: status.baseurl || "https://ilinkai.weixin.qq.com",
         });
+        try {
+          fs.unlinkSync(EXPIRED_FLAG_FILE);
+        } catch {}
+        const daemon = await ensureDaemonRunning();
+        const daemonNote = daemon.running
+          ? daemon.autoStarted
+            ? "Daemon auto-started."
+            : "Daemon already running."
+          : "Daemon could not be started — run: node <wechat-claude>/dist/daemon.js";
         return {
           content: [
             {
               type: "text",
-              text: `Login successful! Session: "${sessionName.value}".\n\nNow start the daemon if not running: node <wechat-claude>/dist/daemon.js (or it may already be running via launchd).`,
+              text: `Login successful! Session: "${sessionName.value}".\n\n${daemonNote}`,
             },
           ],
         };
@@ -264,6 +313,7 @@ server.tool(
   {},
   async () => {
     touchActive();
+    touchHeartbeat(sessionId);
     const msgs = readInbox();
     if (msgs.length === 0) {
       return { content: [{ type: "text", text: "No new messages." }] };
@@ -390,28 +440,45 @@ server.tool(
   "Check WeChat connection, daemon status, and active sessions. Call at session start to see if WeChat monitoring is available.",
   {},
   async () => {
-    const daemonUp = isDaemonRunning();
+    const daemon = await ensureDaemonRunning();
     const sessions = listSessions();
     const inboxCount = peekInbox();
+    const monitoring = isMonitoring(sessionId);
     const lines = [
       `Logged in: ${client.isLoggedIn}`,
-      `Daemon running: ${daemonUp}`,
-      `Session: ${sessionName.value}`,
+      `Daemon running: ${daemon.running}${daemon.autoStarted ? " (auto-started just now)" : ""}`,
+      `Session: ${sessionName.value} (id: ${sessionId})`,
       `Inbox: ${inboxCount} message(s)`,
+      `Watcher: ${monitoring ? "active — this session is monitoring messages" : "NOT active — messages routed here will sit unread"}`,
       `Active sessions (${sessions.length}):`,
       ...sessions.map((s) => {
         const active = Date.now() - s.lastActive < 120_000 ? "●" : "○";
-        return `  ${active} ${s.name} (pid: ${s.pid})`;
+        const mon = isMonitoring(s.id) ? " [monitoring]" : "";
+        return `  ${active} ${s.name} (pid: ${s.pid})${mon}`;
       }),
     ];
-    if (!daemonUp) {
+    if (isLoginExpired()) {
       lines.push(
         "",
-        "Daemon is NOT running. Start it: node <wechat-claude>/dist/daemon.js"
+        "WeChat login has EXPIRED. Call wechat_login to re-authenticate (scan QR code)."
+      );
+    } else if (!client.isLoggedIn) {
+      lines.push("", "Not logged in. Call wechat_login to authenticate.");
+    }
+    if (!daemon.running && client.isLoggedIn) {
+      lines.push(
+        "",
+        `Daemon is NOT running and auto-start failed. Check ${DAEMON_LOG_FILE}, or start manually: node ${DAEMON_PATH}`
       );
     }
-    if (client.isLoggedIn && daemonUp) {
-      lines.push("", "WeChat is fully operational. Messages are being monitored by the daemon.");
+    if (!monitoring) {
+      lines.push(
+        "",
+        `To monitor messages in this session, start a persistent Monitor with: node ${WATCHER_PATH} ${sessionId}`
+      );
+    }
+    if (client.isLoggedIn && daemon.running && monitoring) {
+      lines.push("", "WeChat is fully operational. Messages are being monitored.");
     }
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }

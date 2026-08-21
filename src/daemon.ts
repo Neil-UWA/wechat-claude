@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { execSync, spawn } from "node:child_process";
 import { ILinkClient } from "./ilink.js";
+import { isMonitoring } from "./monitoring.js";
 import type { PendingMessage, WeixinMessage } from "./types.js";
 import { extractText as sharedExtractText } from "./utils.js";
 
@@ -13,6 +14,10 @@ const INBOX_DIR = path.join(WECHAT_DIR, "inbox");
 const CURSOR_FILE = path.join(WECHAT_DIR, "cursor.txt");
 const DAEMON_PID_FILE = path.join(WECHAT_DIR, "daemon.pid");
 const TYPING_DIR = path.join(WECHAT_DIR, "typing");
+const EXPIRED_FLAG_FILE = path.join(WECHAT_DIR, "expired.flag");
+
+const UNREAD_WARN_AFTER_MS = 120_000;
+const DELIVERY_EXPIRE_MS = 600_000;
 
 type SessionInfo = {
   id: string;
@@ -66,11 +71,26 @@ function findSession(selector: string): SessionInfo | undefined {
   if (!isNaN(num) && num >= 1 && num <= sessions.length) {
     return sessions[num - 1];
   }
+  const byPid = sessions.find((s) => String(s.pid) === selector);
+  if (byPid) return byPid;
   const lower = selector.toLowerCase();
-  return (
-    sessions.find((s) => s.name.toLowerCase() === lower) ??
-    sessions.find((s) => s.name.toLowerCase().includes(lower))
-  );
+  const exact = sessions.filter((s) => s.name.toLowerCase() === lower);
+  const pool =
+    exact.length > 0
+      ? exact
+      : sessions.filter((s) => s.name.toLowerCase().includes(lower));
+  if (pool.length === 0) return undefined;
+  if (pool.length === 1) return pool[0];
+  // Ambiguous name: prefer monitored sessions, then the most recently active.
+  const monitored = pool.filter((s) => isMonitoring(s.id));
+  const finalPool = monitored.length > 0 ? monitored : pool;
+  return finalPool.reduce((a, b) => (a.lastActive > b.lastActive ? a : b));
+}
+
+// Display label for a session; appends #pid when the name is ambiguous.
+function sessionLabel(s: SessionInfo, all: SessionInfo[]): string {
+  const dup = all.filter((o) => o.name === s.name).length > 1;
+  return dup ? `${s.name}#${s.pid}` : s.name;
 }
 
 function writeToInbox(sessionId: string, msg: PendingMessage): void {
@@ -111,6 +131,83 @@ function isTypingActive(userId: string): boolean {
 }
 
 const extractText = sharedExtractText;
+
+type Delivery = {
+  msgId: string;
+  sessionId: string;
+  targetName: string;
+  fromUserId: string;
+  deliveredAt: number;
+  warned: boolean;
+};
+
+const deliveries: Delivery[] = [];
+
+function trackDelivery(
+  msgId: string,
+  sessionId: string,
+  targetName: string,
+  fromUserId: string
+): void {
+  deliveries.push({
+    msgId,
+    sessionId,
+    targetName,
+    fromUserId,
+    deliveredAt: Date.now(),
+    warned: false,
+  });
+  if (deliveries.length > 200) deliveries.shift();
+}
+
+function startDeliveryWatcher(client: ILinkClient): void {
+  setInterval(() => {
+    const now = Date.now();
+    for (let i = deliveries.length - 1; i >= 0; i--) {
+      const d = deliveries[i];
+      let stillPending = false;
+      try {
+        const inbox = JSON.parse(
+          fs.readFileSync(path.join(INBOX_DIR, `${d.sessionId}.json`), "utf-8")
+        ) as PendingMessage[];
+        stillPending = inbox.some((m) => m.id === d.msgId);
+      } catch {}
+      if (!stillPending || now - d.deliveredAt > DELIVERY_EXPIRE_MS) {
+        deliveries.splice(i, 1);
+        continue;
+      }
+      if (!d.warned && now - d.deliveredAt > UNREAD_WARN_AFTER_MS) {
+        d.warned = true;
+        client
+          .sendText(
+            d.fromUserId,
+            `提醒: 发给 "${d.targetName}" 的消息已 2 分钟未被读取。该 session 可能没有在监控消息。\n发送 /sessions 查看状态，或用 /s <编号> <消息> 换一个 session。`
+          )
+          .catch((err) => log(`Unread warning failed: ${err}`));
+      }
+    }
+  }, 20_000);
+}
+
+function notifyMacOS(message: string): void {
+  try {
+    execSync(
+      `osascript -e 'display notification "${message}" with title "wechat-claude"'`,
+      { stdio: "ignore" }
+    );
+  } catch {}
+}
+
+const HELP_TEXT = [
+  "wechat-claude 命令:",
+  "",
+  "/sessions 或 /ls — 列出活跃的 Claude session",
+  "/s <编号|名字> <消息> — 发送消息到指定 session",
+  "/run [目录] <任务> — 启动新的 Claude 执行任务 (tmux)",
+  "/help — 显示本帮助",
+  "",
+  "不带命令的消息会发送到最近活跃且在监控中的 session。",
+].join("\n");
 
 function hasTmux(): boolean {
   try {
@@ -231,6 +328,11 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     return;
   }
 
+  if (text === "/help" || text === "/h") {
+    sendReply(HELP_TEXT);
+    return;
+  }
+
   if (text === "/sessions" || text === "/ls") {
     const sessions = listSessions();
     if (sessions.length === 0) {
@@ -239,11 +341,20 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     }
     const lines = sessions.map((s, i) => {
       const active = Date.now() - s.lastActive < 120_000 ? "●" : "○";
+      const monitoring = isMonitoring(s.id) ? " [监控中]" : "";
       const cwd = path.basename(s.cwd);
-      return `${active} ${i + 1}. ${s.name}\n   目录: ${cwd}`;
+      return `${active} ${i + 1}. ${sessionLabel(s, sessions)}${monitoring}\n   目录: ${cwd}`;
     });
     sendReply(
-      `活跃 sessions (${sessions.length}):\n\n${lines.join("\n\n")}\n\n用 /s <编号> <消息> 发送到指定 session\n例: /s 1 你好`
+      `活跃 sessions (${sessions.length}):\n\n${lines.join("\n\n")}\n\n[监控中] = 该 session 正在读取消息（运行过 /wechat）\n重名的 session 以 #pid 区分，可用编号或 pid 指定\n用 /s <编号> <消息> 发送到指定 session\n例: /s 1 你好`
+    );
+    return;
+  }
+
+  const bareRoute = text.match(/^\/s(?:\s+(\S+))?\s*$/);
+  if (bareRoute) {
+    sendReply(
+      "用法: /s <编号|名字> <消息>\n例: /s 1 你好\n发送 /sessions 查看可用列表。"
     );
     return;
   }
@@ -258,6 +369,12 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
       return;
     }
     writeToInbox(target.id, { ...msg, text: message });
+    trackDelivery(msg.id, target.id, target.name, msg.fromUserId);
+    if (!isMonitoring(target.id)) {
+      sendReply(
+        `已投递到 "${target.name}"，但该 session 未在监控消息（未运行 /wechat），可能不会及时处理。`
+      );
+    }
     markTyping(msg.fromUserId);
     client.startTypingKeepAlive(msg.fromUserId, () => isTypingActive(msg.fromUserId));
     log(`Routed to ${target.name} (${target.id})`);
@@ -265,14 +382,24 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   }
 
   const sessions = listSessions();
-  const target = sessions.length > 0
-    ? sessions.reduce((a, b) => (a.lastActive > b.lastActive ? a : b))
+  // Prefer sessions that are actively monitoring their inbox; among those,
+  // pick the most recently active one.
+  const monitored = sessions.filter((s) => isMonitoring(s.id));
+  const pool = monitored.length > 0 ? monitored : sessions;
+  const target = pool.length > 0
+    ? pool.reduce((a, b) => (a.lastActive > b.lastActive ? a : b))
     : undefined;
   if (!target) {
     sendReply("当前没有活跃的 Claude session，消息无法投递。");
     return;
   }
   writeToInbox(target.id, msg);
+  trackDelivery(msg.id, target.id, target.name, msg.fromUserId);
+  if (monitored.length === 0) {
+    sendReply(
+      `已投递到 "${target.name}"，但当前没有任何 session 在监控消息（需要在 Claude Code 中运行 /wechat），可能不会及时处理。`
+    );
+  }
   markTyping(msg.fromUserId);
   client.startTypingKeepAlive(msg.fromUserId);
   log(`Routed to ${target.name} (${target.id})`);
@@ -333,13 +460,24 @@ async function main(): Promise<void> {
   if (cursor) client.setUpdatesCursor(cursor);
 
   startTypingWatcher(client);
+  startDeliveryWatcher(client);
 
   log(`Daemon started (pid ${process.pid}). Polling WeChat...`);
+
+  let clearedExpiredFlag = false;
 
   while (true) {
     try {
       const rawMsgs = await client.getUpdates();
       setCursor(client.getUpdatesCursor());
+
+      if (!clearedExpiredFlag) {
+        // Polling works, so the login is valid — clear any stale expiry flag.
+        try {
+          fs.unlinkSync(EXPIRED_FLAG_FILE);
+        } catch {}
+        clearedExpiredFlag = true;
+      }
 
       for (const msg of rawMsgs) {
         if (msg.message_type !== 1 || msg.message_state !== 2) continue;
@@ -364,6 +502,10 @@ async function main(): Promise<void> {
       const errMsg = err instanceof Error ? err.message : String(err);
       if (errMsg.includes("Session expired")) {
         log("Session expired. Exiting.");
+        try {
+          fs.writeFileSync(EXPIRED_FLAG_FILE, String(Date.now()));
+        } catch {}
+        notifyMacOS("WeChat 登录已过期，请在 Claude Code 中重新扫码登录");
         break;
       }
       log(`Poll error: ${errMsg}`);

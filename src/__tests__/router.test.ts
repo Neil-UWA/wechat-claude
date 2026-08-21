@@ -215,6 +215,138 @@ describe("WechatRouter", () => {
       expect(inbox[0].text).toBe("just a normal message");
     });
 
+    it("/help replies with command list", () => {
+      const router = new WechatRouter("help-test");
+      const msg = makePendingMessage("/help");
+      let reply = "";
+      const handled = router.routeMessage(msg, async (text) => {
+        reply = text;
+      });
+      expect(handled).toBe(true);
+      expect(reply).toContain("/sessions");
+      expect(reply).toContain("/s <编号|名字> <消息>");
+    });
+
+    it("/s without message replies with usage", () => {
+      const router = new WechatRouter("usage-test");
+      const msg = makePendingMessage("/s 1");
+      let reply = "";
+      const handled = router.routeMessage(msg, async (text) => {
+        reply = text;
+      });
+      expect(handled).toBe(true);
+      expect(reply).toContain("用法");
+
+      const inboxFile = path.join(inboxDir, `${router.id}.json`);
+      expect(existsSync(inboxFile)).toBe(false);
+    });
+
+    it("default routes to the most recently active session", () => {
+      const router = new WechatRouter("default-recency");
+      // A fake session that is more recently active than the router's own.
+      createFakeSession("recent", "recent-session", process.pid, Date.now() + 60_000);
+
+      const msg = makePendingMessage("recency check");
+      const handled = router.routeMessage(msg, async () => {});
+      expect(handled).toBe(false);
+
+      const inbox = JSON.parse(
+        readFileSync(path.join(inboxDir, "recent.json"), "utf-8")
+      );
+      expect(inbox.length).toBe(1);
+      expect(inbox[0].text).toBe("recency check");
+    });
+
+    it("default prefers a monitored session over a more recent unmonitored one", () => {
+      const router = new WechatRouter("default-monitored");
+      createFakeSession("older", "older-session", process.pid, Date.now() - 60_000);
+      createFakeSession("newer", "newer-session", process.pid, Date.now() + 60_000);
+
+      const heartbeatDir = path.join(testHome, ".claude", "wechat", "heartbeat");
+      mkdirSync(heartbeatDir, { recursive: true });
+      writeFileSync(path.join(heartbeatDir, "older"), String(Date.now()));
+
+      const msg = makePendingMessage("to the watcher");
+      const handled = router.routeMessage(msg, async () => {});
+      expect(handled).toBe(false);
+
+      const inbox = JSON.parse(
+        readFileSync(path.join(inboxDir, "older.json"), "utf-8")
+      );
+      expect(inbox.length).toBe(1);
+      expect(inbox[0].text).toBe("to the watcher");
+      expect(existsSync(path.join(inboxDir, "newer.json"))).toBe(false);
+
+      rmSync(path.join(heartbeatDir, "older"));
+    });
+
+    it("/sessions marks monitored sessions", () => {
+      const router = new WechatRouter("mark-test");
+      const heartbeatDir = path.join(testHome, ".claude", "wechat", "heartbeat");
+      mkdirSync(heartbeatDir, { recursive: true });
+      writeFileSync(path.join(heartbeatDir, router.id), String(Date.now()));
+
+      const msg = makePendingMessage("/sessions");
+      let reply = "";
+      router.routeMessage(msg, async (text) => {
+        reply = text;
+      });
+      expect(reply).toContain("[监控中]");
+
+      rmSync(path.join(heartbeatDir, router.id));
+    });
+
+    it("/sessions disambiguates duplicate names with #pid", () => {
+      const router = new WechatRouter("dup-lister");
+      createFakeSession("dup-a", "twin", process.pid);
+      createFakeSession("dup-b", "twin", process.ppid);
+
+      const msg = makePendingMessage("/sessions");
+      let reply = "";
+      router.routeMessage(msg, async (text) => {
+        reply = text;
+      });
+      expect(reply).toContain(`twin#${process.pid}`);
+      expect(reply).toContain(`twin#${process.ppid}`);
+      expect(reply).toContain(`dup-lister\n`);
+    });
+
+    it("/s <pid> routes by pid", () => {
+      const router = new WechatRouter("pid-select");
+      createFakeSession("by-pid", "twin", process.ppid);
+
+      const msg = makePendingMessage(`/s ${process.ppid} pid message`);
+      const handled = router.routeMessage(msg, async () => {});
+      expect(handled).toBe(false);
+
+      const inbox = JSON.parse(
+        readFileSync(path.join(inboxDir, "by-pid.json"), "utf-8")
+      );
+      expect(inbox[0].text).toBe("pid message");
+    });
+
+    it("/s with an ambiguous name prefers the monitored session", () => {
+      const router = new WechatRouter("ambiguous-base");
+      createFakeSession("twin-new", "twin", process.pid, Date.now() + 60_000);
+      createFakeSession("twin-old", "twin", process.ppid, Date.now() - 60_000);
+
+      const heartbeatDir = path.join(testHome, ".claude", "wechat", "heartbeat");
+      mkdirSync(heartbeatDir, { recursive: true });
+      writeFileSync(path.join(heartbeatDir, "twin-old"), String(Date.now()));
+
+      const msg = makePendingMessage("/s twin ambiguous pick");
+      const handled = router.routeMessage(msg, async () => {});
+      expect(handled).toBe(false);
+
+      const inbox = JSON.parse(
+        readFileSync(path.join(inboxDir, "twin-old.json"), "utf-8")
+      );
+      expect(inbox[0].text).toBe("ambiguous pick");
+      expect(existsSync(path.join(inboxDir, "twin-new.json"))).toBe(false);
+
+      rmSync(path.join(heartbeatDir, "twin-old"));
+    });
+
     it("sends 'no active session' when none available", () => {
       const router = new WechatRouter("disposable");
       clearDir(sessionsDir);
