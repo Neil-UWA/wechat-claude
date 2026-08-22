@@ -2,67 +2,39 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ILinkClient } from "./ilink.js";
+import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js";
 import { isMonitoring, touchHeartbeat } from "./monitoring.js";
+import {
+  DAEMON_PID_FILE,
+  EXPIRED_FLAG_FILE,
+  SESSIONS_DIR,
+  TYPING_DIR,
+  WECHAT_DIR,
+  ensureDirs as ensureWechatDirs,
+  isProcessAlive,
+} from "./paths.js";
+import {
+  type SessionInfo,
+  detectSessionName as detectSessionNameFor,
+  listSessions,
+  writeSessionFile,
+} from "./sessions.js";
 
-const WECHAT_DIR = path.join(os.homedir(), ".claude", "wechat");
-const SESSIONS_DIR = path.join(WECHAT_DIR, "sessions");
-const INBOX_DIR = path.join(WECHAT_DIR, "inbox");
-const TYPING_DIR = path.join(WECHAT_DIR, "typing");
-const DAEMON_PID_FILE = path.join(WECHAT_DIR, "daemon.pid");
-const EXPIRED_FLAG_FILE = path.join(WECHAT_DIR, "expired.flag");
 const DAEMON_LOG_FILE = path.join(WECHAT_DIR, "daemon.log");
-
 const DAEMON_PATH = fileURLToPath(new URL("./daemon.js", import.meta.url));
 const WATCHER_PATH = fileURLToPath(new URL("./watch-inbox.js", import.meta.url));
 
 function ensureDirs(): void {
-  fs.mkdirSync(WECHAT_DIR, { recursive: true, mode: 0o700 });
-  try {
-    fs.chmodSync(WECHAT_DIR, 0o700);
-  } catch {}
-  for (const dir of [SESSIONS_DIR, INBOX_DIR, TYPING_DIR]) {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  }
+  ensureWechatDirs();
 }
 
 function detectSessionName(): string {
-  const cwd = process.cwd();
-  const worktreeMatch = cwd.match(/\.claude[/\\]worktrees[/\\]([^/\\]+)/);
-  if (worktreeMatch) {
-    const repoPath = cwd
-      .split(/\.claude[/\\]worktrees[/\\]/)[0]
-      .replace(/[/\\]$/, "");
-    return `${path.basename(repoPath)}/${worktreeMatch[1]}`;
-  }
-  const repoName = path.basename(cwd);
-  try {
-    let gitDir = path.join(cwd, ".git");
-    const gitStat = fs.statSync(gitDir);
-    if (!gitStat.isDirectory()) {
-      const content = fs.readFileSync(gitDir, "utf-8").trim();
-      const m = content.match(/gitdir:\s*(.+)/);
-      if (m) gitDir = path.resolve(cwd, m[1]);
-    }
-    const head = fs.readFileSync(path.join(gitDir, "HEAD"), "utf-8").trim();
-    const branchMatch = head.match(/ref:\s*refs\/heads\/(.+)/);
-    if (branchMatch) return `${repoName}:${branchMatch[1]}`;
-  } catch {}
-  return repoName || `session-${process.pid}`;
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  return detectSessionNameFor(process.cwd());
 }
 
 function isDaemonRunning(): boolean {
@@ -109,102 +81,53 @@ function isLoginExpired(): boolean {
   return fs.existsSync(EXPIRED_FLAG_FILE);
 }
 
-type SessionInfo = {
-  id: string;
-  name: string;
-  cwd: string;
-  pid: number;
-  lastActive: number;
-};
-
 const sessionId = String(process.pid);
 const sessionName = { value: detectSessionName() };
 const client = new ILinkClient();
 
-function register(): void {
-  ensureDirs();
-  const info: SessionInfo = {
+function currentSessionInfo(): SessionInfo {
+  return {
     id: sessionId,
     name: sessionName.value,
     cwd: process.cwd(),
     pid: process.pid,
     lastActive: Date.now(),
   };
-  fs.writeFileSync(
-    path.join(SESSIONS_DIR, `${sessionId}.json`),
-    JSON.stringify(info)
-  );
+}
+
+function register(): void {
+  ensureDirs();
+  writeSessionFile(currentSessionInfo());
 }
 
 function unregister(): void {
   try {
     fs.unlinkSync(path.join(SESSIONS_DIR, `${sessionId}.json`));
   } catch {}
-  try {
-    fs.unlinkSync(path.join(INBOX_DIR, `${sessionId}.json`));
-  } catch {}
 }
 
 function touchActive(): void {
-  try {
-    const file = path.join(SESSIONS_DIR, `${sessionId}.json`);
-    const info = JSON.parse(fs.readFileSync(file, "utf-8")) as SessionInfo;
-    info.lastActive = Date.now();
-    info.name = sessionName.value;
-    fs.writeFileSync(file, JSON.stringify(info));
-  } catch {
-    register();
-  }
+  writeSessionFile(currentSessionInfo());
 }
 
-function readInbox(): { id: string; fromUserId: string; text: string; contextToken: string; timestamp: number }[] {
-  const file = path.join(INBOX_DIR, `${sessionId}.json`);
-  try {
-    const raw = fs.readFileSync(file, "utf-8");
-    const msgs = JSON.parse(raw) as { id: string; fromUserId: string; text: string; contextToken: string; timestamp: number }[];
-    if (msgs.length > 0) fs.writeFileSync(file, "[]");
-    return msgs;
-  } catch {
-    return [];
-  }
+function readInbox(): {
+  id: string;
+  fromUserId: string;
+  text: string;
+  contextToken: string;
+  timestamp: number;
+}[] {
+  return readInboxFor(sessionId);
 }
 
 function peekInbox(): number {
-  const file = path.join(INBOX_DIR, `${sessionId}.json`);
-  try {
-    return (JSON.parse(fs.readFileSync(file, "utf-8")) as unknown[]).length;
-  } catch {
-    return 0;
-  }
+  return peekInboxFor(sessionId);
 }
 
 function clearTyping(userId: string): void {
   try {
     fs.unlinkSync(path.join(TYPING_DIR, userId));
   } catch {}
-}
-
-function listSessions(): SessionInfo[] {
-  const sessions: SessionInfo[] = [];
-  try {
-    for (const file of fs.readdirSync(SESSIONS_DIR)) {
-      if (!file.endsWith(".json")) continue;
-      try {
-        const info = JSON.parse(
-          fs.readFileSync(path.join(SESSIONS_DIR, file), "utf-8")
-        ) as SessionInfo;
-        if (isProcessAlive(info.pid)) {
-          sessions.push(info);
-        } else {
-          fs.unlinkSync(path.join(SESSIONS_DIR, file));
-          try {
-            fs.unlinkSync(path.join(INBOX_DIR, file));
-          } catch {}
-        }
-      } catch {}
-    }
-  } catch {}
-  return sessions.sort((a, b) => a.pid - b.pid);
 }
 
 const server = new McpServer({ name: "wechat-claude", version: "2.0.0" });

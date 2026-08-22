@@ -11,7 +11,29 @@ import {
   setBinding,
 } from "./bindings.js";
 import { clearHeartbeat, isMonitoring } from "./monitoring.js";
+import {
+  CONFIG_FILE,
+  CURSOR_FILE,
+  DAEMON_PID_FILE,
+  EXPIRED_FLAG_FILE,
+  INBOX_DIR,
+  MEDIA_DIR,
+  SESSIONS_DIR,
+  TYPING_DIR,
+  ensureDirs as ensureWechatDirs,
+  isProcessAlive,
+} from "./paths.js";
 import { assignSessionNumbers } from "./session-numbers.js";
+import {
+  type SessionInfo,
+  findSession,
+  getDefaultTarget,
+  listSessions,
+  matchSessions,
+  sessionLabel,
+  sortedSessions,
+} from "./sessions.js";
+import { writeToInbox } from "./inbox.js";
 import {
   hasTmux,
   isSafeSessionName,
@@ -29,38 +51,14 @@ import {
   parseRunFlags,
 } from "./utils.js";
 
-const WECHAT_DIR = path.join(os.homedir(), ".claude", "wechat");
-const SESSIONS_DIR = path.join(WECHAT_DIR, "sessions");
-const INBOX_DIR = path.join(WECHAT_DIR, "inbox");
-const CURSOR_FILE = path.join(WECHAT_DIR, "cursor.txt");
-const DAEMON_PID_FILE = path.join(WECHAT_DIR, "daemon.pid");
-const TYPING_DIR = path.join(WECHAT_DIR, "typing");
-const MEDIA_DIR = path.join(WECHAT_DIR, "media");
-const EXPIRED_FLAG_FILE = path.join(WECHAT_DIR, "expired.flag");
-const MEDIA_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+function ensureDirs(): void {
+  ensureWechatDirs([MEDIA_DIR]);
+}
 
+const MEDIA_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const UNREAD_WARN_AFTER_MS = 120_000;
 const DELIVERY_EXPIRE_MS = 600_000;
-
-type SessionInfo = {
-  id: string;
-  name: string;
-  cwd: string;
-  pid: number;
-  lastActive: number;
-};
-
-function ensureDirs(): void {
-  // The tree holds bot tokens, context tokens, and downloaded media — keep it
-  // owner-only (0700). chmod covers dirs created before this hardening.
-  fs.mkdirSync(WECHAT_DIR, { recursive: true, mode: 0o700 });
-  try {
-    fs.chmodSync(WECHAT_DIR, 0o700);
-  } catch {}
-  for (const dir of [SESSIONS_DIR, INBOX_DIR, TYPING_DIR, MEDIA_DIR]) {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  }
-}
+const IDLE_MS = 2 * 60 * 60 * 1000;
 
 function cleanOldMedia(): void {
   try {
@@ -96,86 +94,6 @@ async function enrichImages(
       log(`Image download failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function listSessions(): SessionInfo[] {
-  const sessions: SessionInfo[] = [];
-  try {
-    for (const file of fs.readdirSync(SESSIONS_DIR)) {
-      if (!file.endsWith(".json")) continue;
-      try {
-        const info = JSON.parse(
-          fs.readFileSync(path.join(SESSIONS_DIR, file), "utf-8")
-        ) as SessionInfo;
-        if (isProcessAlive(info.pid)) {
-          sessions.push(info);
-        } else {
-          fs.unlinkSync(path.join(SESSIONS_DIR, file));
-          try {
-            fs.unlinkSync(path.join(INBOX_DIR, file));
-          } catch {}
-        }
-      } catch {}
-    }
-  } catch {}
-  return sessions.sort((a, b) => a.pid - b.pid);
-}
-
-// Listing/selection order: monitored sessions first, stable pid order within
-// each group. Numbering in /sessions and "/s <number>" both use this order.
-function sortedSessions(): SessionInfo[] {
-  return listSessions().sort((a, b) => {
-    const ma = isMonitoring(a.id) ? 1 : 0;
-    const mb = isMonitoring(b.id) ? 1 : 0;
-    if (ma !== mb) return mb - ma;
-    return a.pid - b.pid;
-  });
-}
-
-function getDefaultTarget(sessions: SessionInfo[]): SessionInfo | undefined {
-  const monitored = sessions.filter((s) => isMonitoring(s.id));
-  const pool = monitored.length > 0 ? monitored : sessions;
-  if (pool.length === 0) return undefined;
-  return pool.reduce((a, b) => (a.lastActive > b.lastActive ? a : b));
-}
-
-function findSession(selector: string): SessionInfo | undefined {
-  const sessions = sortedSessions();
-  const num = parseInt(selector, 10);
-  if (!isNaN(num) && String(num) === selector) {
-    const numbers = assignSessionNumbers(sessions.map((s) => s.id));
-    const byNum = sessions.find((s) => numbers[s.id] === num);
-    if (byNum) return byNum;
-  }
-  const byPid = sessions.find((s) => String(s.pid) === selector);
-  if (byPid) return byPid;
-  const lower = selector.toLowerCase();
-  const exact = sessions.filter((s) => s.name.toLowerCase() === lower);
-  const pool =
-    exact.length > 0
-      ? exact
-      : sessions.filter((s) => s.name.toLowerCase().includes(lower));
-  if (pool.length === 0) return undefined;
-  if (pool.length === 1) return pool[0];
-  // Ambiguous name: prefer monitored sessions, then the most recently active.
-  const monitored = pool.filter((s) => isMonitoring(s.id));
-  const finalPool = monitored.length > 0 ? monitored : pool;
-  return finalPool.reduce((a, b) => (a.lastActive > b.lastActive ? a : b));
-}
-
-// Display label for a session; appends #pid when the name is ambiguous.
-function sessionLabel(s: SessionInfo, all: SessionInfo[]): string {
-  const dup = all.filter((o) => o.name === s.name).length > 1;
-  return dup ? `${s.name}#${s.pid}` : s.name;
 }
 
 function getParentPid(pid: number): number | undefined {
@@ -226,40 +144,10 @@ function closeSession(s: SessionInfo): { ok: boolean; line: string } {
   return { ok: true, line: `✓ ${s.name} (pid ${s.pid})` };
 }
 
-// All sessions matching a selector (number and pid are unique; a name can
-// match several).
-function matchSessions(selector: string): SessionInfo[] {
-  const sessions = sortedSessions();
-  const num = parseInt(selector, 10);
-  if (!isNaN(num) && String(num) === selector) {
-    const numbers = assignSessionNumbers(sessions.map((s) => s.id));
-    const byNum = sessions.filter((s) => numbers[s.id] === num);
-    if (byNum.length > 0) return byNum;
-  }
-  const byPid = sessions.filter((s) => String(s.pid) === selector);
-  if (byPid.length > 0) return byPid;
-  const lower = selector.toLowerCase();
-  const exact = sessions.filter((s) => s.name.toLowerCase() === lower);
-  if (exact.length > 0) return exact;
-  return sessions.filter((s) => s.name.toLowerCase().includes(lower));
-}
-
-const IDLE_MS = 2 * 60 * 60 * 1000;
-
 function remainingSummary(closedIds: Set<string>): string {
   const remaining = listSessions().filter((s) => !closedIds.has(s.id));
   const monitored = remaining.filter((s) => isMonitoring(s.id)).length;
   return `剩余 ${remaining.length} 个 session，其中 ${monitored} 个监控中。`;
-}
-
-function writeToInbox(sessionId: string, msg: PendingMessage): void {
-  const file = path.join(INBOX_DIR, `${sessionId}.json`);
-  let inbox: PendingMessage[] = [];
-  try {
-    inbox = JSON.parse(fs.readFileSync(file, "utf-8")) as PendingMessage[];
-  } catch {}
-  inbox.push(msg);
-  fs.writeFileSync(file, JSON.stringify(inbox));
 }
 
 function getCursor(): string {
@@ -437,10 +325,9 @@ function expandTilde(p: string): string {
 function getRepoSearchDirs(): { dirs: string[]; configError?: string } {
   const dirs = new Set<string>();
   let configError: string | undefined;
-  const configFile = path.join(WECHAT_DIR, "config.json");
-  if (fs.existsSync(configFile)) {
+  if (fs.existsSync(CONFIG_FILE)) {
     try {
-      const parsed: unknown = JSON.parse(fs.readFileSync(configFile, "utf-8"));
+      const parsed: unknown = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
       const repoDirs =
         typeof parsed === "object" && parsed !== null
           ? (parsed as Record<string, unknown>).repoDirs
