@@ -6,8 +6,8 @@
     <string>com.wechat-claude.daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/neillu/.nvm/versions/node/v24.16.0/bin/node</string>
-        <string>/Users/neillu/Documents/repos/wechat-claude/dist/daemon.js</string>
+        <string>__NODE__</string>
+        <string>__DAEMON_JS__</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -19,13 +19,13 @@
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>/Users/neillu/.claude/wechat/daemon.log</string>
+    <string>__LOG__</string>
     <key>StandardErrorPath</key>
-    <string>/Users/neillu/.claude/wechat/daemon.log</string>
+    <string>__LOG__</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Users/neillu/.nvm/versions/node/v24.16.0/bin:/Users/neillu/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>__PATH__</string>
     </dict>
 </dict>
 </plist>
