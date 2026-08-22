@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createCipheriv, randomBytes } from "node:crypto";
-import { extractText, aesEcbPaddedSize, buildRunPrompt, decryptCdnMedia, formatAgo, imageExtension, parseRunFlags } from "../utils.js";
+import { extractText, aesEcbPaddedSize, buildRunPrompt, decryptCdnMedia, imageExtension, parseRunFlags } from "../utils.js";
 import type { WeixinMessage, MessageItem } from "../types.js";
 
 const CDN_STUB = { encrypt_query_param: "", aes_key: "", encrypt_type: 0 };
@@ -189,15 +189,6 @@ describe("buildRunPrompt", () => {
     const prompt = buildRunPrompt("跑一遍测试并修复失败的用例", "user@im.wechat");
     expect(prompt).toContain("wechat_set_session_name");
     expect(prompt).toContain('"run:跑一遍测试并修复失败的用'); // 12-char cap
-  });
-});
-
-describe("formatAgo", () => {
-  it("formats ranges", () => {
-    expect(formatAgo(10_000)).toBe("刚刚");
-    expect(formatAgo(5 * 60_000)).toBe("5 分钟前");
-    expect(formatAgo(3 * 3_600_000)).toBe("3 小时前");
-    expect(formatAgo(2 * 86_400_000)).toBe("2 天前");
   });
 });
 

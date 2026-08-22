@@ -20,8 +20,9 @@ npm test
 
 - Strict TypeScript: no `any`, no non-null assertions, explicit return types
   on exported functions.
-- User-facing WeChat strings are Chinese by design (the audience is WeChat
-  users); keep them in the existing help/reply strings.
+- User-facing WeChat strings live in `src/i18n.ts` with `zh` (default) and
+  `en` catalogs — add both when you add a message, and localize content
+  markers via `marker()` and relative times via `formatAgo(ms, lang)`.
 - Never build a shell command by string interpolation of user input. Use
   `spawnSync` with an argv array (see `src/tmux.ts`).
 

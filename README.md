@@ -180,6 +180,18 @@ npm run daemon:log         # Tail daemon log
 5. Claude processes the message and replies via `wechat_send_text`
 6. The MCP server clears the typing indicator file; the daemon detects this and stops typing
 
+## Language
+
+Bot replies default to Chinese (the WeChat audience). To switch to English, set
+`lang` in `~/.claude/wechat/config.json`:
+
+```json
+{ "lang": "en" }
+```
+
+All user-facing strings live in `src/i18n.ts` (`zh` + `en`); the `WECHAT_LANG`
+environment variable overrides the config value.
+
 ## Security
 
 wechat-claude executes code on your machine in response to chat messages. Read

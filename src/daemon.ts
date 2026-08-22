@@ -35,6 +35,7 @@ import {
   sortedSessions,
 } from "./sessions.js";
 import { writeToInbox } from "./inbox.js";
+import { type Lang, formatAgo, getLang, marker, t } from "./i18n.js";
 import {
   hasTmux,
   isSafeSessionName,
@@ -48,7 +49,6 @@ import type { PendingMessage, WeixinMessage } from "./types.js";
 import {
   buildRunPrompt,
   extractText as sharedExtractText,
-  formatAgo,
   parseRunFlags,
 } from "./utils.js";
 
@@ -89,7 +89,11 @@ async function enrichImages(
     try {
       const outBase = path.join(MEDIA_DIR, `${pending.id}-${index}`);
       const saved = await client.downloadMedia(item.image_item.media, outBase);
-      pending.text = pending.text.replace("[图片]", `[图片: ${saved}]`);
+      const lang = getLang();
+      pending.text = pending.text.replace(
+        marker("image", lang),
+        `${marker("image", lang).replace(/\]$/, "")}: ${saved}]`
+      );
       log(`Image saved: ${saved}`);
     } catch (err) {
       log(`Image download failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -140,15 +144,15 @@ function closeSession(s: SessionInfo): { ok: boolean; line: string } {
   clearHeartbeat(s.id);
   clearBindingsToSession(s.id);
   if (!killedServer && !killedParent) {
-    return { ok: false, line: `✗ ${s.name} (pid ${s.pid}) — 进程可能已退出，已从列表移除` };
+    return { ok: false, line: t().closeFailedLine(s.name, s.pid) };
   }
-  return { ok: true, line: `✓ ${s.name} (pid ${s.pid})` };
+  return { ok: true, line: t().closeOkLine(s.name, s.pid) };
 }
 
 function remainingSummary(closedIds: Set<string>): string {
   const remaining = listSessions().filter((s) => !closedIds.has(s.id));
   const monitored = remaining.filter((s) => isMonitoring(s.id)).length;
-  return `剩余 ${remaining.length} 个 session，其中 ${monitored} 个监控中。`;
+  return t().remainingSummary(remaining.length, monitored);
 }
 
 function getCursor(): string {
@@ -227,10 +231,7 @@ function startDeliveryWatcher(client: ILinkClient): void {
       if (!d.warned && now - d.deliveredAt > UNREAD_WARN_AFTER_MS) {
         d.warned = true;
         client
-          .sendText(
-            d.fromUserId,
-            `提醒: 发给 "${d.targetName}" 的消息已 2 分钟未被读取。该 session 可能没有在监控消息。\n发送 /sessions 查看状态，或用 /s <编号> <消息> 换一个 session。`
-          )
+          .sendText(d.fromUserId, t().unreadWarn(d.targetName))
           .catch((err) => log(`Unread warning failed: ${err}`));
       }
     }
@@ -247,36 +248,6 @@ function notifyMacOS(message: string): void {
   });
 }
 
-const HELP_TEXT = [
-  "🤖 wechat-claude 用法",
-  "",
-  "👀 看",
-  "/ls — session 列表",
-  "/ls all — 展开闲置的",
-  "",
-  "💬 聊",
-  "/use 3 — 绑定 3 号，之后消息都发给它",
-  "/use off — 取消绑定",
-  "/s 3 你好 — 只发这一条给 3 号",
-  "",
-  "🚀 跑任务",
-  "/run 修复登录bug — 新开 Claude 执行（默认无人值守）",
-  "/run myapp 跑测试 — 指定目录",
-  "/run --safe <任务> — bash 命令需在电脑确认",
-  "/runs — 任务列表",
-  "/stop 1 — 按编号终止，/stop all 全部",
-  "",
-  "🧹 清理",
-  "/close 3 — 关闭 3 号",
-  "/close idle — 清理全部闲置",
-  "/close myapp all — 关闭同名全部",
-  "",
-  "📌 备注",
-  "· 编号固定不变，可用编号/名字/pid 选 session",
-  "· 普通消息发给绑定的 session（没绑定就发给最近活跃且监控中的）",
-  "· 📷 可以直接发图片，Claude 能看到内容",
-  "· 🎤 语音会自动转成文字",
-].join("\n");
 
 function resolveRunDir(dirHint: string | undefined): string | undefined {
   if (!dirHint) {
@@ -334,23 +305,23 @@ function getRepoSearchDirs(): { dirs: string[]; configError?: string } {
           ? (parsed as Record<string, unknown>).repoDirs
           : undefined;
       if (repoDirs !== undefined && !Array.isArray(repoDirs)) {
-        configError = "config.json 的 repoDirs 必须是字符串数组";
+        configError = t().cfgNotArray;
       } else if (Array.isArray(repoDirs)) {
         for (const d of repoDirs) {
           if (typeof d !== "string") {
-            configError = "config.json 的 repoDirs 含非字符串项，已跳过";
+            configError = t().cfgNonString;
             continue;
           }
           const expanded = expandTilde(d);
           if (!path.isAbsolute(expanded)) {
-            configError = `config.json 的 repoDirs 项 "${d}" 不是绝对路径，已跳过`;
+            configError = t().cfgNotAbsolute(d);
             continue;
           }
           dirs.add(expanded);
         }
       }
     } catch {
-      configError = "config.json 不是合法 JSON，repoDirs 配置未生效";
+      configError = t().cfgBadJson;
     }
   }
   const home = os.homedir();
@@ -406,10 +377,7 @@ function startRunWatcher(client: ILinkClient): void {
       saveRunSessions();
       const mins = Math.round((Date.now() - r.startedAt) / 60_000);
       client
-        .sendText(
-          r.fromUserId,
-          `任务 session "${r.name}" 已结束（运行 ${mins} 分钟）。\n任务: ${r.task.slice(0, 80)}\n\n如果没有收到结果消息，任务可能中途失败，可发 /run 重试或回电脑查看。`
-        )
+        .sendText(r.fromUserId, t().runEnded(r.name, mins, r.task.slice(0, 80)))
         .catch((err) => log(`Run-end notify failed: ${err}`));
     }
   }, 30_000);
@@ -426,10 +394,11 @@ function handleRunCommand(
     });
   };
 
+  const m = t();
   const { auto, rest } = parseRunFlags(args);
 
   if (!rest) {
-    sendReply("用法: /run [--safe] [目录] <任务>\n\n默认跳过权限确认（无人值守）。加 --safe 则只自动接受编辑，bash 命令需要在电脑上确认。\n\n例:\n/run 检查最近的 PR\n/run myapp 跑一遍测试并修复失败\n/run --safe /path/to/repo 修复 bug");
+    sendReply(m.runUsage);
     return;
   }
 
@@ -466,15 +435,20 @@ function handleRunCommand(
     if (dirHint) {
       const search = getRepoSearchDirs();
       const configNote = search.configError ? `\n\n⚠️ ${search.configError}` : "";
-      sendReply(`找不到目录 "${dirHint}"，已取消（避免任务跑错地方）。\n\n可用的 session 目录:\n${listSessions().map((s) => `  - ${s.name} (${s.cwd})`).join("\n")}\n\n也可以用这些目录下的项目名:\n${search.dirs.map((d) => `  - ${d}`).join("\n") || "  （无，可在 ~/.claude/wechat/config.json 配置 repoDirs）"}\n\n或直接给绝对路径。如果 "${dirHint}" 是任务内容而不是目录，用: /run . ${task}${configNote}`);
+      const sessDirs = listSessions()
+        .map((s) => `  - ${s.name} (${s.cwd})`)
+        .join("\n");
+      const searchDirs =
+        search.dirs.map((d) => `  - ${d}`).join("\n") || m.noRepoDirs;
+      sendReply(m.runDirNotFound(dirHint, sessDirs, searchDirs, task, configNote));
     } else {
-      sendReply("没有活跃的 session，请指定目录。\n用法: /run <目录> <任务>");
+      sendReply(m.runNoSession);
     }
     return;
   }
 
   if (!hasTmux()) {
-    sendReply("tmux 未安装，无法启动交互式 session。请在终端中手动运行。");
+    sendReply(m.tmuxMissing);
     return;
   }
 
@@ -493,11 +467,11 @@ function handleRunCommand(
   // is safe.
   const shellCmd = `task=$(cat '${taskFile}'); rm -f '${taskFile}'; exec claude ${permFlag} "$task"`;
 
-  const err = newTmuxSession(sessionName, cwd, shellCmd);
-  if (err) {
+  const startErr = newTmuxSession(sessionName, cwd, shellCmd);
+  if (startErr) {
     try { fs.unlinkSync(taskFile); } catch {}
-    log(`Failed to start tmux session: ${err}`);
-    sendReply(`启动失败: ${err}`);
+    log(`Failed to start tmux session: ${startErr}`);
+    sendReply(m.runStartFailed(startErr));
     return;
   }
 
@@ -510,11 +484,20 @@ function handleRunCommand(
   });
   saveRunSessions();
   log(`Started tmux session "${sessionName}" in ${cwd}: ${task}`);
-  sendReply(`已启动 Claude session\n\n目录: ${path.basename(cwd)}\n任务: ${task}\n权限: ${auto ? "跳过确认（默认）" : "仅自动接受编辑 (--safe)"}\ntmux: ${sessionName}\n\n完成后结果会发回微信。\n/runs 查看运行中的任务，/stop ${sessionName} 可终止。\n回到电脑后可运行: tmux attach -t ${sessionName}`);
+  sendReply(
+    m.runStarted(
+      path.basename(cwd),
+      task,
+      auto ? m.permSkip : m.permSafe,
+      sessionName
+    )
+  );
 }
 
 function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   const text = msg.text.trim();
+  const lang = getLang();
+  const m = t(lang);
 
   const sendReply = (reply: string): void => {
     client.sendText(msg.fromUserId, reply).catch((err) => {
@@ -531,18 +514,16 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   if (text === "/runs") {
     const names = listRunTmuxSessions();
     if (names.length === 0) {
-      sendReply("当前没有 /run 启动的任务 session。");
+      sendReply(m.runsNone);
       return;
     }
     const lines = names.map((name, i) => {
       const tracked = runSessions.find((r) => r.name === name);
-      if (!tracked) return `${i + 1}. ${name}`;
+      if (!tracked) return m.runsEntryBare(i + 1, name);
       const mins = Math.round((Date.now() - tracked.startedAt) / 60_000);
-      return `${i + 1}. ${name}（${mins} 分钟前启动）\n   任务: ${tracked.task.slice(0, 60)}`;
+      return m.runsEntry(i + 1, name, mins, tracked.task.slice(0, 60));
     });
-    sendReply(
-      `运行中的任务 (${names.length}):\n\n${lines.join("\n\n")}\n\n/stop <编号|名称> 终止，/stop all 全部终止\n电脑上: tmux attach -t <名称>`
-    );
+    sendReply(m.runsList(names.length, lines.join("\n\n")));
     return;
   }
 
@@ -554,30 +535,22 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
       const bound = boundId
         ? listSessions().find((s) => s.id === boundId)
         : undefined;
-      sendReply(
-        bound
-          ? `当前绑定: "${bound.name}" (pid ${bound.pid})。\n/use off 取消绑定，/use <编号|名字|pid> 换绑。`
-          : "当前没有绑定。\n/use <编号|名字|pid> — 绑定后你的所有消息都直接发给该 session\n/use off — 取消绑定"
-      );
+      sendReply(bound ? m.useCurrent(bound.name, bound.pid) : m.useNone);
       return;
     }
     if (selector === "off" || selector === "取消") {
       clearBinding(msg.fromUserId);
-      sendReply("已取消绑定，恢复默认路由（最近活跃且监控中的 session）。");
+      sendReply(m.useUnbound);
       return;
     }
     const target = findSession(selector);
     if (!target) {
-      sendReply(`找不到 "${selector}"。发送 /sessions 查看列表。`);
+      sendReply(m.notFound(selector));
       return;
     }
     setBinding(msg.fromUserId, target.id);
-    const warn = isMonitoring(target.id)
-      ? ""
-      : "\n注意: 该 session 未在监控消息，回复可能不及时。";
-    sendReply(
-      `已绑定 "${target.name}" (pid ${target.pid})。之后你的所有消息都会直接发给它。${warn}\n/use off 取消绑定。`
-    );
+    const warn = isMonitoring(target.id) ? "" : m.useNotMonitoredWarn;
+    sendReply(m.useBound(target.name, target.pid, warn));
     return;
   }
 
@@ -586,9 +559,7 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     const selector = closeMatch[1];
     const closeAll = closeMatch[2] !== undefined;
     if (!selector) {
-      sendReply(
-        "用法:\n/close <编号|名字|pid> — 关闭指定 session\n/close <名字> all — 关闭全部同名 session\n/close idle — 清理全部闲置 session（未监控且 2 小时以上未活跃）\n\n注意: 关闭会终止进程，session 中未保存的工作会丢失。/run 启动的任务请用 /stop。"
-      );
+      sendReply(m.closeUsage);
       return;
     }
 
@@ -599,35 +570,40 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
         (s) => !isMonitoring(s.id) && now - s.lastActive >= IDLE_MS
       );
       if (targets.length === 0) {
-        sendReply("没有闲置的 session（未监控且 2 小时以上未活跃）。");
+        sendReply(m.closeNoIdle);
         return;
       }
     } else {
       targets = matchSessions(selector);
       if (targets.length === 0) {
-        sendReply(`找不到 "${selector}"。发送 /sessions 查看列表。`);
+        sendReply(m.notFound(selector));
         return;
       }
       if (targets.length > 1 && !closeAll) {
         const now = Date.now();
-        const lines = targets.map((t) => {
-          const mon = isMonitoring(t.id) ? "，监控中" : "";
-          return `• ${t.name}#${t.pid}（${formatAgo(now - t.lastActive)}活跃${mon}）`;
+        const lines = targets.map((s) => {
+          const mon = isMonitoring(s.id) ? m.monitoringSuffix : "";
+          return m.closeAmbiguousEntry(
+            s.name,
+            s.pid,
+            formatAgo(now - s.lastActive, lang),
+            mon
+          );
         });
-        sendReply(
-          `"${selector}" 匹配到 ${targets.length} 个 session:\n\n${lines.join("\n")}\n\n全部关闭: /close ${selector} all\n单独关闭: /close <pid>`
-        );
+        sendReply(m.closeAmbiguous(selector, targets.length, lines.join("\n")));
         return;
       }
     }
 
-    const results = targets.map((t) => closeSession(t));
-    const closedIds = new Set(targets.map((t) => t.id));
-    for (const t of targets) log(`Closed session ${t.name} (${t.id}) via WeChat`);
-    const header =
-      targets.length === 1 ? "已关闭 session:" : `已关闭 ${targets.length} 个 session:`;
+    const results = targets.map((s) => closeSession(s));
+    const closedIds = new Set(targets.map((s) => s.id));
+    for (const s of targets) log(`Closed session ${s.name} (${s.id}) via WeChat`);
     sendReply(
-      `${header}\n${results.map((r) => r.line).join("\n")}\n\n${remainingSummary(closedIds)}`
+      m.closed(
+        targets.length,
+        results.map((r) => r.line).join("\n"),
+        remainingSummary(closedIds)
+      )
     );
     return;
   }
@@ -637,7 +613,7 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     const selector = stopMatch[1];
     const running = listRunTmuxSessions();
     if (running.length === 0) {
-      sendReply("当前没有 /run 启动的任务 session。");
+      sendReply(m.runsNone);
       return;
     }
 
@@ -649,14 +625,14 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
       if (!isNaN(num) && String(num) === selector) {
         const byNum = running[num - 1];
         if (!byNum) {
-          sendReply(`编号 ${num} 超出范围。发送 /runs 查看列表。`);
+          sendReply(m.stopNumOutOfRange(num));
           return;
         }
         targets = [byNum];
       } else if (running.includes(selector)) {
         targets = [selector];
       } else {
-        sendReply(`没有找到运行中的 "${selector}"。发送 /runs 查看编号或名称。`);
+        sendReply(m.stopNotFound(selector));
         return;
       }
     }
@@ -675,14 +651,14 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     saveRunSessions();
     sendReply(
       stopped.length > 0
-        ? `已终止 ${stopped.length} 个任务:\n${stopped.map((n) => `• ${n}`).join("\n")}`
-        : "终止失败，可能已退出。发送 /runs 查看。"
+        ? m.stopped(stopped.length, stopped.map((n) => `• ${n}`).join("\n"))
+        : m.stopFailed
     );
     return;
   }
 
   if (text === "/help" || text === "/h") {
-    sendReply(HELP_TEXT);
+    sendReply(m.help);
     return;
   }
 
@@ -691,7 +667,7 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     const showAll = listMatch[1] !== undefined;
     const sessions = sortedSessions();
     if (sessions.length === 0) {
-      sendReply("当前没有活跃的 Claude session。");
+      sendReply(m.noSessions);
       return;
     }
     const defaultTarget = getDefaultTarget(sessions);
@@ -710,27 +686,31 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
       .filter(({ s }) => !isIdle(s))
       .map(({ s, num }) => {
         const active = now - s.lastActive < 120_000 ? "●" : "○";
-        const monitoring = isMonitoring(s.id) ? " [监控中]" : "";
-        const receiver =
-          s.id === receiverId ? (bound ? " ← 已绑定" : " ← 默认接收") : "";
-        const cwd = path.basename(s.cwd);
-        return `${active} ${num}. ${sessionLabel(s, sessions)}${monitoring}${receiver}\n   目录: ${cwd} · ${formatAgo(now - s.lastActive)}活跃`;
+        const tags =
+          (isMonitoring(s.id) ? m.monitoringTag : "") +
+          (s.id === receiverId ? (bound ? m.boundTag : m.defaultTag) : "");
+        return m.sessionEntry(
+          active,
+          num,
+          sessionLabel(s, sessions),
+          tags,
+          path.basename(s.cwd),
+          formatAgo(now - s.lastActive, lang)
+        );
       });
     const idleLines = entries
       .filter(({ s }) => isIdle(s))
-      .map(({ s, num }) => `○ ${num}. ${sessionLabel(s, sessions)} · ${formatAgo(now - s.lastActive)}`);
+      .map(({ s, num }) =>
+        m.idleEntry(num, sessionLabel(s, sessions), formatAgo(now - s.lastActive, lang))
+      );
     const sections = [
-      `活跃 sessions (${sessions.length}):`,
+      m.sessionsHeader(sessions.length),
       mainLines.join("\n\n"),
-      idleLines.length > 0
-        ? `闲置（未监控、2 小时以上未活跃）:\n${idleLines.join("\n")}\n可发 /close idle 一键清理`
-        : "",
+      idleLines.length > 0 ? m.idleSection(idleLines.join("\n")) : "",
       [
-        bound
-          ? "← 已绑定 = 你的消息都发到这里（/use off 取消）"
-          : "← 默认接收 = 不带命令的消息会发到这里（/use <编号> 可固定绑定）",
-        "编号固定不变 · [监控中] = 正在读取消息",
-        "用 /s <编号|名字|pid> <消息> 发送到指定 session，例: /s 1 你好",
+        bound ? m.legendBound : m.legendDefault,
+        m.legendNumbers,
+        m.legendRoute,
       ].join("\n"),
     ].filter(Boolean);
     sendReply(sections.join("\n\n"));
@@ -739,9 +719,7 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
 
   const bareRoute = text.match(/^\/s(?:\s+(\S+))?\s*$/);
   if (bareRoute) {
-    sendReply(
-      "用法: /s <编号|名字> <消息>\n例: /s 1 你好\n发送 /sessions 查看可用列表。"
-    );
+    sendReply(m.sListUsage);
     return;
   }
 
@@ -751,15 +729,13 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     const message = routeMatch[2];
     const target = findSession(selector);
     if (!target) {
-      sendReply(`找不到 "${selector}"。发送 /sessions 查看列表。`);
+      sendReply(m.notFound(selector));
       return;
     }
     writeToInbox(target.id, { ...msg, text: message });
     trackDelivery(msg.id, target.id, target.name, msg.fromUserId);
     if (!isMonitoring(target.id)) {
-      sendReply(
-        `已投递到 "${target.name}"，但该 session 未在监控消息（未运行 /wechat），可能不会及时处理。`
-      );
+      sendReply(m.deliveredUnmonitored(target.name));
     }
     markTyping(msg.fromUserId);
     client.startTypingKeepAlive(msg.fromUserId, () => isTypingActive(msg.fromUserId));
@@ -776,19 +752,17 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     : undefined;
   if (boundId && !target) {
     clearBinding(msg.fromUserId);
-    sendReply("绑定的 session 已关闭，已自动解除绑定，本条消息按默认路由投递。");
+    sendReply(m.bindingCleared);
   }
   target = target ?? getDefaultTarget(sessions);
   if (!target) {
-    sendReply("当前没有活跃的 Claude session，消息无法投递。");
+    sendReply(m.noSessionsDeliver);
     return;
   }
   writeToInbox(target.id, msg);
   trackDelivery(msg.id, target.id, target.name, msg.fromUserId);
   if (!isMonitoring(target.id)) {
-    sendReply(
-      `已投递到 "${target.name}"，但当前没有任何 session 在监控消息（需要在 Claude Code 中运行 /wechat），可能不会及时处理。`
-    );
+    sendReply(m.deliveredNoneMonitored(target.name));
   }
   markTyping(msg.fromUserId);
   client.startTypingKeepAlive(msg.fromUserId);
@@ -875,7 +849,7 @@ async function main(): Promise<void> {
         if (msg.message_type !== 1 || msg.message_state !== 2) continue;
         client.trackContextToken(msg.from_user_id, msg.context_token);
 
-        const text = extractText(msg);
+        const text = extractText(msg, getLang());
         if (!text) continue;
 
         const pending: PendingMessage = {
@@ -899,7 +873,7 @@ async function main(): Promise<void> {
         try {
           fs.writeFileSync(EXPIRED_FLAG_FILE, String(Date.now()));
         } catch {}
-        notifyMacOS("WeChat 登录已过期，请在 Claude Code 中重新扫码登录");
+        notifyMacOS(t().loginExpired);
         break;
       }
       log(`Poll error: ${errMsg}`);
