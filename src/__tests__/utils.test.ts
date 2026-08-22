@@ -139,16 +139,16 @@ describe("aesEcbPaddedSize", () => {
 
 describe("parseRunFlags", () => {
   it("defaults to auto (skip permissions)", () => {
-    expect(parseRunFlags("fintary 跑测试")).toEqual({
+    expect(parseRunFlags("myapp 跑测试")).toEqual({
       auto: true,
-      rest: "fintary 跑测试",
+      rest: "myapp 跑测试",
     });
   });
 
   it("-y is accepted as a no-op", () => {
-    expect(parseRunFlags("-y fintary 跑测试")).toEqual({
+    expect(parseRunFlags("-y myapp 跑测试")).toEqual({
       auto: true,
-      rest: "fintary 跑测试",
+      rest: "myapp 跑测试",
     });
   });
 

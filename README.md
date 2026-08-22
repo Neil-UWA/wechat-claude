@@ -88,6 +88,23 @@ Incoming images are downloaded and decrypted automatically to
 contains the local path (`[图片: /path/to/file.png]`) so the receiving Claude
 session can open the file directly.
 
+### /run directory resolution
+
+`/run <name> <task>` resolves `<name>` in this order:
+
+1. An active session whose name (or directory basename) matches
+2. An absolute path
+3. `<dir>/<name>` for each search directory — the `repoDirs` entries in
+   `~/.claude/wechat/config.json` (optional, e.g. `{"repoDirs": ["~/code"]}`;
+   entries must be absolute or `~`-prefixed, invalid entries are reported)
+   plus the parent directory of every active session's cwd (the home
+   directory itself is never used as a search root)
+
+If the first word looks like a directory name but resolves nowhere, the run
+is cancelled with an explanation instead of silently executing in another
+directory. Use `/run . <task>` to force the default directory when the task
+text happens to start with a path-like word.
+
 ## MCP Tools
 
 | Tool | Description |
@@ -104,8 +121,8 @@ session can open the file directly.
 
 Sessions are automatically named based on the working directory:
 
-- Git repo: `reponame:branch` (e.g., `fintary:main`)
-- Worktree: `reponame/worktree-name` (e.g., `fintary/agency-bill`)
+- Git repo: `reponame:branch` (e.g., `myapp:main`)
+- Worktree: `reponame/worktree-name` (e.g., `myapp/feature-x`)
 - Non-git: directory name
 
 Use `wechat_set_session_name` to set a custom name.
@@ -115,6 +132,10 @@ Use `wechat_set_session_name` to set a custom name.
 ```
 ~/.claude/wechat/
 ├── session.json          # ilink bot token (persisted login)
+├── config.json           # optional settings (e.g. repoDirs for /run)
+├── bindings.json         # /use bindings (WeChat user -> session)
+├── session-numbers.json  # stable session number registry
+├── media/                # downloaded incoming images (7-day retention)
 ├── context_tokens.json   # shared context tokens (daemon ↔ MCP server)
 ├── daemon.pid            # daemon process ID
 ├── daemon.log            # daemon output

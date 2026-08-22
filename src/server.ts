@@ -22,8 +22,12 @@ const DAEMON_PATH = fileURLToPath(new URL("./daemon.js", import.meta.url));
 const WATCHER_PATH = fileURLToPath(new URL("./watch-inbox.js", import.meta.url));
 
 function ensureDirs(): void {
-  for (const dir of [WECHAT_DIR, SESSIONS_DIR, INBOX_DIR, TYPING_DIR]) {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(WECHAT_DIR, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(WECHAT_DIR, 0o700);
+  } catch {}
+  for (const dir of [SESSIONS_DIR, INBOX_DIR, TYPING_DIR]) {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 }
 
@@ -423,7 +427,7 @@ server.tool(
 server.tool(
   "wechat_set_session_name",
   "Set a name for this session for WeChat routing ('/s <name> <msg>').",
-  { name: z.string().describe("Session name (e.g. 'fintary', 'review')") },
+  { name: z.string().describe("Session name (e.g. 'backend', 'review')") },
   async ({ name }) => {
     sessionName.value = name;
     register();

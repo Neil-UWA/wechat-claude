@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { execSync, spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { ILinkClient } from "./ilink.js";
 import {
   clearBinding,
@@ -12,6 +12,15 @@ import {
 } from "./bindings.js";
 import { clearHeartbeat, isMonitoring } from "./monitoring.js";
 import { assignSessionNumbers } from "./session-numbers.js";
+import {
+  hasTmux,
+  isSafeSessionName,
+  killTmuxSession,
+  listTmuxSessions,
+  newTmuxSession,
+  sanitizeForSessionName,
+  tmuxSessionExists,
+} from "./tmux.js";
 import type { PendingMessage, WeixinMessage } from "./types.js";
 import {
   buildRunPrompt,
@@ -42,8 +51,14 @@ type SessionInfo = {
 };
 
 function ensureDirs(): void {
-  for (const dir of [WECHAT_DIR, SESSIONS_DIR, INBOX_DIR, TYPING_DIR, MEDIA_DIR]) {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  // The tree holds bot tokens, context tokens, and downloaded media — keep it
+  // owner-only (0700). chmod covers dirs created before this hardening.
+  fs.mkdirSync(WECHAT_DIR, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(WECHAT_DIR, 0o700);
+  } catch {}
+  for (const dir of [SESSIONS_DIR, INBOX_DIR, TYPING_DIR, MEDIA_DIR]) {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 }
 
@@ -164,23 +179,20 @@ function sessionLabel(s: SessionInfo, all: SessionInfo[]): string {
 }
 
 function getParentPid(pid: number): number | undefined {
-  try {
-    const ppid = parseInt(
-      execSync(`ps -o ppid= -p ${pid}`).toString().trim(),
-      10
-    );
-    return Number.isFinite(ppid) && ppid > 1 ? ppid : undefined;
-  } catch {
-    return undefined;
-  }
+  const r = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (r.status !== 0 || !r.stdout) return undefined;
+  const ppid = parseInt(r.stdout.toString().trim(), 10);
+  return Number.isFinite(ppid) && ppid > 1 ? ppid : undefined;
 }
 
 function commandOf(pid: number): string {
-  try {
-    return execSync(`ps -o command= -p ${pid}`).toString().trim();
-  } catch {
-    return "";
-  }
+  const r = spawnSync("ps", ["-o", "command=", "-p", String(pid)], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (r.status !== 0 || !r.stdout) return "";
+  return r.stdout.toString().trim();
 }
 
 // Terminate a session: its MCP server process and — when it is identifiably a
@@ -337,52 +349,44 @@ function startDeliveryWatcher(client: ILinkClient): void {
 }
 
 function notifyMacOS(message: string): void {
-  try {
-    execSync(
-      `osascript -e 'display notification "${message}" with title "wechat-claude"'`,
-      { stdio: "ignore" }
-    );
-  } catch {}
+  if (process.platform !== "darwin") return;
+  // Pass text as an argv element, never interpolated into the -e script.
+  const script = "display notification (system attribute \"WC_MSG\") with title \"wechat-claude\"";
+  spawnSync("osascript", ["-e", script], {
+    stdio: "ignore",
+    env: { ...process.env, WC_MSG: message },
+  });
 }
 
 const HELP_TEXT = [
-  "wechat-claude 用法",
+  "🤖 wechat-claude 用法",
   "",
-  "【看】",
+  "👀 看",
   "/ls — session 列表",
   "/ls all — 展开闲置的",
   "",
-  "【聊】",
+  "💬 聊",
   "/use 3 — 绑定 3 号，之后消息都发给它",
   "/use off — 取消绑定",
   "/s 3 你好 — 只发这一条给 3 号",
   "",
-  "【跑任务】",
+  "🚀 跑任务",
   "/run 修复登录bug — 新开 Claude 执行",
-  "/run fintary 跑测试 — 指定目录",
+  "/run myapp 跑测试 — 指定目录",
   "/runs — 任务列表",
   "/stop <名称> — 终止任务",
   "",
-  "【清理】",
+  "🧹 清理",
   "/close 3 — 关闭 3 号",
   "/close idle — 清理全部闲置",
-  "/close fintary all — 关闭同名全部",
+  "/close myapp all — 关闭同名全部",
   "",
-  "【备注】",
+  "📌 备注",
   "· 编号固定不变，可用编号/名字/pid 选 session",
   "· 普通消息发给绑定的 session（没绑定就发给最近活跃且监控中的）",
-  "· 可以直接发图片，Claude 能看到内容",
-  "· 语音会自动转成文字",
+  "· 📷 可以直接发图片，Claude 能看到内容",
+  "· 🎤 语音会自动转成文字",
 ].join("\n");
-
-function hasTmux(): boolean {
-  try {
-    execSync("which tmux", { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 function resolveRunDir(dirHint: string | undefined): string | undefined {
   if (!dirHint) {
@@ -401,19 +405,72 @@ function resolveRunDir(dirHint: string | undefined): string | undefined {
   );
   if (match) return match.cwd;
 
-  const reposDir = path.join(os.homedir(), "Documents", "repos");
-  const candidate = path.join(reposDir, dirHint);
-  try {
-    if (fs.statSync(candidate).isDirectory()) return candidate;
-  } catch {}
-
   if (path.isAbsolute(dirHint)) {
     try {
       if (fs.statSync(dirHint).isDirectory()) return dirHint;
     } catch {}
+    return undefined;
+  }
+
+  for (const dir of getRepoSearchDirs().dirs) {
+    const candidate = path.join(dir, dirHint);
+    try {
+      if (fs.statSync(candidate).isDirectory()) return candidate;
+    } catch {}
   }
 
   return undefined;
+}
+
+function expandTilde(p: string): string {
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+// Directories to search when "/run <name> ..." names a project that has no
+// active session: user-configured repoDirs from ~/.claude/wechat/config.json,
+// plus the parent directories of every active session's cwd (so once you've
+// opened a project near your other repos, its siblings resolve by name too).
+// The home directory itself is never used as a search root — too broad.
+function getRepoSearchDirs(): { dirs: string[]; configError?: string } {
+  const dirs = new Set<string>();
+  let configError: string | undefined;
+  const configFile = path.join(WECHAT_DIR, "config.json");
+  if (fs.existsSync(configFile)) {
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(configFile, "utf-8"));
+      const repoDirs =
+        typeof parsed === "object" && parsed !== null
+          ? (parsed as Record<string, unknown>).repoDirs
+          : undefined;
+      if (repoDirs !== undefined && !Array.isArray(repoDirs)) {
+        configError = "config.json 的 repoDirs 必须是字符串数组";
+      } else if (Array.isArray(repoDirs)) {
+        for (const d of repoDirs) {
+          if (typeof d !== "string") {
+            configError = "config.json 的 repoDirs 含非字符串项，已跳过";
+            continue;
+          }
+          const expanded = expandTilde(d);
+          if (!path.isAbsolute(expanded)) {
+            configError = `config.json 的 repoDirs 项 "${d}" 不是绝对路径，已跳过`;
+            continue;
+          }
+          dirs.add(expanded);
+        }
+      }
+    } catch {
+      configError = "config.json 不是合法 JSON，repoDirs 配置未生效";
+    }
+  }
+  const home = os.homedir();
+  for (const s of listSessions()) {
+    const parent = path.dirname(s.cwd);
+    if (parent !== home && parent !== path.sep) dirs.add(parent);
+  }
+  if (configError) log(`Config warning: ${configError}`);
+  return { dirs: [...dirs], configError };
 }
 
 type RunSession = {
@@ -426,24 +483,8 @@ type RunSession = {
 
 const runSessions: RunSession[] = [];
 
-function tmuxSessionAlive(name: string): boolean {
-  try {
-    execSync(`tmux has-session -t "${name}"`, { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function listRunTmuxSessions(): string[] {
-  try {
-    return execSync("tmux ls -F '#{session_name}'", { stdio: ["ignore", "pipe", "ignore"] })
-      .toString()
-      .split("\n")
-      .filter((name) => name.startsWith("wc-"));
-  } catch {
-    return [];
-  }
+  return listTmuxSessions().filter((name) => name.startsWith("wc-"));
 }
 
 // Notify the WeChat user when a /run tmux session ends, so a crashed or
@@ -452,7 +493,7 @@ function startRunWatcher(client: ILinkClient): void {
   setInterval(() => {
     for (let i = runSessions.length - 1; i >= 0; i--) {
       const r = runSessions[i];
-      if (tmuxSessionAlive(r.name)) continue;
+      if (tmuxSessionExists(r.name)) continue;
       runSessions.splice(i, 1);
       const mins = Math.round((Date.now() - r.startedAt) / 60_000);
       client
@@ -479,27 +520,44 @@ function handleRunCommand(
   const { auto, rest } = parseRunFlags(args);
 
   if (!rest) {
-    sendReply("用法: /run [--safe] [目录] <任务>\n\n默认跳过权限确认（无人值守）。加 --safe 则只自动接受编辑，bash 命令需要在电脑上确认。\n\n例:\n/run 检查最近的 PR\n/run fintary 跑一遍测试并修复失败\n/run --safe /path/to/repo 修复 bug");
+    sendReply("用法: /run [--safe] [目录] <任务>\n\n默认跳过权限确认（无人值守）。加 --safe 则只自动接受编辑，bash 命令需要在电脑上确认。\n\n例:\n/run 检查最近的 PR\n/run myapp 跑一遍测试并修复失败\n/run --safe /path/to/repo 修复 bug");
     return;
   }
 
   const parts = rest.split(/\s+/);
   let dirHint: string | undefined;
   let task: string;
+  let cwd: string | undefined;
 
-  const firstWordAsDir = resolveRunDir(parts[0]);
-  if (parts.length > 1 && firstWordAsDir) {
-    dirHint = parts[0];
+  // "/run . <任务>" runs in the default (most recently active session's) dir
+  // even when the first task word happens to look like a directory name.
+  if (parts[0] === "." && parts.length > 1) {
     task = parts.slice(1).join(" ");
+    cwd = resolveRunDir(undefined);
   } else {
-    dirHint = undefined;
-    task = rest;
+    const firstWordAsDir = parts.length > 1 ? resolveRunDir(parts[0]) : undefined;
+    if (firstWordAsDir) {
+      dirHint = parts[0];
+      task = parts.slice(1).join(" ");
+      cwd = firstWordAsDir;
+    } else if (parts.length > 1 && /^[A-Za-z0-9_./\\-]+$/.test(parts[0])) {
+      // Looks like a directory/repo name (e.g. "myrepo", "my-app", a path)
+      // but resolves nowhere. Running the whole text as a task in some other
+      // directory — unattended — is the worst outcome, so ask instead.
+      dirHint = parts[0];
+      task = rest;
+      cwd = undefined;
+    } else {
+      task = rest;
+      cwd = resolveRunDir(undefined);
+    }
   }
 
-  const cwd = resolveRunDir(dirHint);
   if (!cwd) {
     if (dirHint) {
-      sendReply(`找不到目录 "${dirHint}"。\n\n可用的 session 目录:\n${listSessions().map((s) => `  - ${s.name} (${s.cwd})`).join("\n")}\n\n也可以用 ~/Documents/repos/ 下的目录名，或绝对路径。`);
+      const search = getRepoSearchDirs();
+      const configNote = search.configError ? `\n\n⚠️ ${search.configError}` : "";
+      sendReply(`找不到目录 "${dirHint}"，已取消（避免任务跑错地方）。\n\n可用的 session 目录:\n${listSessions().map((s) => `  - ${s.name} (${s.cwd})`).join("\n")}\n\n也可以用这些目录下的项目名:\n${search.dirs.map((d) => `  - ${d}`).join("\n") || "  （无，可在 ~/.claude/wechat/config.json 配置 repoDirs）"}\n\n或直接给绝对路径。如果 "${dirHint}" 是任务内容而不是目录，用: /run . ${task}${configNote}`);
     } else {
       sendReply("没有活跃的 session，请指定目录。\n用法: /run <目录> <任务>");
     }
@@ -511,7 +569,7 @@ function handleRunCommand(
     return;
   }
 
-  const sessionName = `wc-${path.basename(cwd)}-${Date.now().toString(36)}`;
+  const sessionName = `wc-${sanitizeForSessionName(path.basename(cwd))}-${Date.now().toString(36)}`;
   const taskFile = path.join(os.tmpdir(), `wechat-run-${sessionName}.txt`);
   fs.writeFileSync(taskFile, buildRunPrompt(task, msg.fromUserId));
 
@@ -521,20 +579,16 @@ function handleRunCommand(
     ? "--dangerously-skip-permissions"
     : "--permission-mode acceptEdits";
   // The command string is passed to tmux as a single argv element (no outer
-  // shell), so "$task" is expanded by the shell tmux starts — not by us.
+  // shell), so "$task" is expanded by the shell tmux starts — not by us. The
+  // task file path uses only our sanitized session name, so single-quoting it
+  // is safe.
   const shellCmd = `task=$(cat '${taskFile}'); rm -f '${taskFile}'; exec claude ${permFlag} "$task"`;
 
-  const result = spawnSync(
-    "tmux",
-    ["new-session", "-d", "-s", sessionName, "-c", cwd, shellCmd],
-    { stdio: "ignore" }
-  );
-
-  if (result.status !== 0 || result.error) {
+  const err = newTmuxSession(sessionName, cwd, shellCmd);
+  if (err) {
     try { fs.unlinkSync(taskFile); } catch {}
-    const errMsg = result.error ? String(result.error) : `tmux exited with ${result.status}`;
-    log(`Failed to start tmux session: ${errMsg}`);
-    sendReply(`启动失败: ${errMsg}`);
+    log(`Failed to start tmux session: ${err}`);
+    sendReply(`启动失败: ${err}`);
     return;
   }
 
@@ -570,14 +624,14 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
       sendReply("当前没有 /run 启动的任务 session。");
       return;
     }
-    const lines = names.map((name) => {
+    const lines = names.map((name, i) => {
       const tracked = runSessions.find((r) => r.name === name);
-      if (!tracked) return `• ${name}`;
+      if (!tracked) return `${i + 1}. ${name}`;
       const mins = Math.round((Date.now() - tracked.startedAt) / 60_000);
-      return `• ${name}（${mins} 分钟前启动）\n  任务: ${tracked.task.slice(0, 60)}`;
+      return `${i + 1}. ${name}（${mins} 分钟前启动）\n   任务: ${tracked.task.slice(0, 60)}`;
     });
     sendReply(
-      `运行中的任务 (${names.length}):\n\n${lines.join("\n\n")}\n\n/stop <名称> 可终止\n电脑上: tmux attach -t <名称>`
+      `运行中的任务 (${names.length}):\n\n${lines.join("\n\n")}\n\n/stop <编号|名称> 终止，/stop all 全部终止\n电脑上: tmux attach -t <名称>`
     );
     return;
   }
@@ -670,24 +724,49 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
 
   const stopMatch = text.match(/^\/stop\s+(\S+)\s*$/);
   if (stopMatch) {
-    const name = stopMatch[1];
-    if (!name.startsWith("wc-")) {
-      sendReply(`只能终止 /run 启动的任务（名称以 wc- 开头）。发送 /runs 查看列表。`);
+    const selector = stopMatch[1];
+    const running = listRunTmuxSessions();
+    if (running.length === 0) {
+      sendReply("当前没有 /run 启动的任务 session。");
       return;
     }
-    if (!tmuxSessionAlive(name)) {
-      sendReply(`没有找到运行中的 "${name}"。发送 /runs 查看列表。`);
-      return;
+
+    let targets: string[];
+    if (selector === "all" || selector === "全部") {
+      targets = running;
+    } else {
+      const num = parseInt(selector, 10);
+      if (!isNaN(num) && String(num) === selector) {
+        const byNum = running[num - 1];
+        if (!byNum) {
+          sendReply(`编号 ${num} 超出范围。发送 /runs 查看列表。`);
+          return;
+        }
+        targets = [byNum];
+      } else if (running.includes(selector)) {
+        targets = [selector];
+      } else {
+        sendReply(`没有找到运行中的 "${selector}"。发送 /runs 查看编号或名称。`);
+        return;
+      }
     }
-    try {
-      execSync(`tmux kill-session -t "${name}"`, { stdio: "ignore" });
-      const idx = runSessions.findIndex((r) => r.name === name);
-      if (idx >= 0) runSessions.splice(idx, 1);
-      sendReply(`已终止任务 session "${name}"。`);
-      log(`Stopped tmux session "${name}" via WeChat`);
-    } catch (err) {
-      sendReply(`终止失败: ${err instanceof Error ? err.message : String(err)}`);
+
+    // Guard: only ever kill our own wc- sessions, whatever the selector.
+    targets = targets.filter((n) => n.startsWith("wc-") && isSafeSessionName(n));
+    const stopped: string[] = [];
+    for (const name of targets) {
+      if (killTmuxSession(name)) {
+        stopped.push(name);
+        const idx = runSessions.findIndex((r) => r.name === name);
+        if (idx >= 0) runSessions.splice(idx, 1);
+        log(`Stopped tmux session "${name}" via WeChat`);
+      }
     }
+    sendReply(
+      stopped.length > 0
+        ? `已终止 ${stopped.length} 个任务:\n${stopped.map((n) => `• ${n}`).join("\n")}`
+        : "终止失败，可能已退出。发送 /runs 查看。"
+    );
     return;
   }
 
