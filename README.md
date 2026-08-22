@@ -1,6 +1,21 @@
 # wechat-claude
 
-Control Claude Code via WeChat. Built from scratch using the ilink Bot API — no third-party dependencies beyond the MCP SDK.
+Control Claude Code from your phone via WeChat. Message a task like
+`/run fix the login bug` and a Claude Code session runs it on your machine and
+sends the result back to your chat. Built on the ilink Bot API — no
+third-party dependencies beyond the MCP SDK.
+
+> ⚠️ **This runs code on your computer from chat messages.** Read
+> [SECURITY.md](SECURITY.md) before using it. Run it only on a machine you
+> control and an account only you can message.
+
+## Prerequisites
+
+- **Node.js 20+** and **[Claude Code](https://claude.com/claude-code)**.
+- **WeChat with ClawBot / ilink Bot access.** The bot is bound to *your* WeChat
+  account by scanning a QR code at login; it is not publicly discoverable and
+  strangers cannot message it. macOS is the first-class platform (launchd
+  autostart + native notifications); Linux/Windows run the daemon manually.
 
 ## Architecture
 
@@ -13,53 +28,41 @@ WeChat User ←→ ilink Bot API ←→ Daemon (polling + routing) ←→ Inbox 
 
 ## Setup
 
-### 1. Install
-
 ```bash
-git clone <repo-url>
+git clone https://github.com/Neil-UWA/wechat-claude.git
 cd wechat-claude
 npm install
 npm run build
+npx wechat-claude setup
 ```
 
-### 2. Register MCP Server
+`setup` registers the MCP server, installs the `/wechat` slash command into
+`~/.claude/commands/`, and walks you through QR login (it opens the QR image in
+your browser — scan it with WeChat). The bot token is saved to
+`~/.claude/wechat/session.json` (mode 0600); you won't scan again unless it
+expires.
+
+Then start the daemon and enable monitoring:
 
 ```bash
-claude mcp add --scope user wechat node /path/to/wechat-claude/dist/server.js
+npm run daemon:install   # macOS: install as a launchd service (auto-start + restart)
+# or, without autostart:
+npm run daemon           # run it in the foreground / your own supervisor
 ```
 
-### 3. First Login
+Finally, type `/wechat` in any Claude Code session. That starts a persistent
+watcher (`dist/watch-inbox.js`) that reacts to messages instantly via
+`fs.watch` and marks the session `[monitoring]`. The daemon also auto-starts on
+`/wechat` and after a successful login if it isn't already running (it's a
+singleton, guarded by a pid file).
 
-In any Claude Code session, ask Claude to log in to WeChat:
-
-```
-> Login to WeChat
-```
-
-Claude will generate a QR code URL. Scan it with WeChat to authenticate. The session token is saved to `~/.claude/wechat/session.json` — you won't need to scan again unless the token expires.
-
-### 4. Daemon
-
-The daemon starts automatically: `wechat_status` (called by `/wechat`) and a
-successful login both spawn it if it isn't running. To also survive reboots,
-install it as a macOS launchd service:
-
-```bash
-# Edit com.wechat-claude.daemon.plist first if your node/script paths differ
-npm run daemon:install
-```
-
-Manual start still works too: `node /path/to/wechat-claude/dist/daemon.js &`.
-The daemon is a singleton (pid-file guard) — extra starts exit immediately.
+`npm run daemon:install` generates the launchd plist for *your* paths from a
+template (`scripts/gen-plist.mjs`) — no manual editing. Other CLI commands:
+`npx wechat-claude login` (re-auth) and `npx wechat-claude status`.
 
 If the WeChat login expires, the daemon posts a macOS notification and sets a
-flag that `wechat_status` surfaces, so the next `/wechat` prompts a re-login.
-
-### 5. Enable Monitoring in a Session
-
-Type `/wechat` in any Claude Code session. This starts a persistent watcher
-(`dist/watch-inbox.js`) that reacts to new messages instantly via `fs.watch`
-and maintains a heartbeat marking the session as `[monitoring]`.
+flag that `wechat_status` surfaces, so the next `/wechat` prompts a re-login —
+see [Troubleshooting](#troubleshooting) since you'll be away from the Mac.
 
 ## WeChat Commands
 
@@ -113,6 +116,7 @@ text happens to start with a path-like word.
 | `wechat_login_poll` | Poll QR code scan status |
 | `wechat_get_messages` | Read and clear incoming messages from inbox |
 | `wechat_send_text` | Send a text reply to a WeChat user |
+| `wechat_send_image` | Send an image file (with optional caption) to a WeChat user |
 | `wechat_set_session_name` | Set a custom name for routing |
 | `wechat_status` | Check connection, daemon, and session info |
 | `wechat_logout` | Disconnect and clear session |
@@ -167,16 +171,55 @@ npm run daemon:log         # Tail daemon log
 
 1. **Daemon** polls WeChat via the ilink Bot API (`getupdates` long-polling)
 2. Incoming messages are parsed and routed:
-   - `/sessions` commands are handled directly by the daemon
+   - Commands like `/sessions`, `/run`, `/close`, `/use` are handled by the daemon
    - `/s <target> <msg>` routes to a specific session's inbox
-   - Other messages go to the most recently active session
+   - A plain message goes to your bound session (`/use`), else the most
+     recently active session that is `[monitoring]`
 3. When a message is routed, the daemon starts a "typing" indicator on WeChat
 4. **MCP Server** reads from its inbox when Claude calls `wechat_get_messages`
 5. Claude processes the message and replies via `wechat_send_text`
 6. The MCP server clears the typing indicator file; the daemon detects this and stops typing
 
+## Security
+
+wechat-claude executes code on your machine in response to chat messages. Read
+[SECURITY.md](SECURITY.md) for the full threat model. In short:
+
+- Only the account that scanned the login QR can message the bot; it is not
+  publicly discoverable and (currently) cannot be added to group chats.
+- `/run` runs unattended by default (`--dangerously-skip-permissions`); use
+  `/run --safe <task>` to require confirmation for bash commands.
+- The bot token lives in `~/.claude/wechat/session.json` (0600); the whole
+  data directory is 0700. Run only on a machine you control.
+
+## Troubleshooting
+
+- **The bot stopped replying.** The WeChat login likely expired — the daemon
+  exits on expiry and can no longer send messages. Back at the Mac, run
+  `npx wechat-claude status`; if logged out, `npx wechat-claude login` (or
+  `/wechat` in a session) to re-scan. Restart the daemon if needed.
+- **`/run` says "找不到目录".** The name didn't resolve to a project; add its
+  parent to `repoDirs` in `~/.claude/wechat/config.json`, pass an absolute
+  path, or use `/run . <task>` to run in the default directory.
+- **A message got no response.** Check `npm run daemon:status` and
+  `npm run daemon:log`. If the target session isn't `[monitoring]`, run
+  `/wechat` in it or bind with `/use <n>`.
+- **`daemon:install` did nothing on Linux/Windows.** launchd is macOS-only;
+  run the daemon under your own supervisor (`npm run daemon`, systemd, pm2…).
+
+## Uninstall
+
+```bash
+npm run daemon:uninstall        # remove the launchd service (macOS)
+claude mcp remove wechat        # unregister the MCP server
+rm ~/.claude/commands/wechat.md # remove the slash command
+rm -rf ~/.claude/wechat         # remove tokens, inboxes, media, config
+```
+
 ## Requirements
 
 - Node.js 20+
 - Claude Code
-- WeChat (iOS with ClawBot support)
+- WeChat with ClawBot / ilink Bot access
+- macOS for launchd autostart and native notifications; Linux/Windows work
+  with a manually supervised daemon
