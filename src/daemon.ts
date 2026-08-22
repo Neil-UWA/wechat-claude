@@ -20,6 +20,7 @@ import {
   MEDIA_DIR,
   SESSIONS_DIR,
   TYPING_DIR,
+  WECHAT_DIR,
   ensureDirs as ensureWechatDirs,
   isProcessAlive,
 } from "./paths.js";
@@ -369,7 +370,26 @@ type RunSession = {
   startedAt: number;
 };
 
-const runSessions: RunSession[] = [];
+// Persisted so /runs and end-of-run notifications survive daemon restarts
+// (launchd KeepAlive makes restarts routine).
+const RUNS_FILE = path.join(WECHAT_DIR, "runs.json");
+
+function loadRunSessions(): RunSession[] {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(RUNS_FILE, "utf-8"));
+    return Array.isArray(parsed) ? (parsed as RunSession[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRunSessions(): void {
+  try {
+    fs.writeFileSync(RUNS_FILE, JSON.stringify(runSessions));
+  } catch {}
+}
+
+const runSessions: RunSession[] = loadRunSessions();
 
 function listRunTmuxSessions(): string[] {
   return listTmuxSessions().filter((name) => name.startsWith("wc-"));
@@ -383,6 +403,7 @@ function startRunWatcher(client: ILinkClient): void {
       const r = runSessions[i];
       if (tmuxSessionExists(r.name)) continue;
       runSessions.splice(i, 1);
+      saveRunSessions();
       const mins = Math.round((Date.now() - r.startedAt) / 60_000);
       client
         .sendText(
@@ -487,6 +508,7 @@ function handleRunCommand(
     fromUserId: msg.fromUserId,
     startedAt: Date.now(),
   });
+  saveRunSessions();
   log(`Started tmux session "${sessionName}" in ${cwd}: ${task}`);
   sendReply(`已启动 Claude session\n\n目录: ${path.basename(cwd)}\n任务: ${task}\n权限: ${auto ? "跳过确认（默认）" : "仅自动接受编辑 (--safe)"}\ntmux: ${sessionName}\n\n完成后结果会发回微信。\n/runs 查看运行中的任务，/stop ${sessionName} 可终止。\n回到电脑后可运行: tmux attach -t ${sessionName}`);
 }
@@ -650,6 +672,7 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
         log(`Stopped tmux session "${name}" via WeChat`);
       }
     }
+    saveRunSessions();
     sendReply(
       stopped.length > 0
         ? `已终止 ${stopped.length} 个任务:\n${stopped.map((n) => `• ${n}`).join("\n")}`
