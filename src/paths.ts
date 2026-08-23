@@ -14,14 +14,14 @@ export const EXPIRED_FLAG_FILE = path.join(WECHAT_DIR, "expired.flag");
 export const CONFIG_FILE = path.join(WECHAT_DIR, "config.json");
 
 // Create the tree owner-only (0700) — it holds the bot token, context tokens,
-// and downloaded media. chmod covers a directory created before this hardening.
+// and downloaded media. chmod (not just mkdir mode) so directories created
+// before this hardening, or with a looser umask, are tightened too.
 export function ensureDirs(extra: string[] = []): void {
-  fs.mkdirSync(WECHAT_DIR, { recursive: true, mode: 0o700 });
-  try {
-    fs.chmodSync(WECHAT_DIR, 0o700);
-  } catch {}
-  for (const dir of [SESSIONS_DIR, INBOX_DIR, TYPING_DIR, ...extra]) {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (const dir of [WECHAT_DIR, SESSIONS_DIR, INBOX_DIR, TYPING_DIR, ...extra]) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try {
+      fs.chmodSync(dir, 0o700);
+    } catch {}
   }
 }
 

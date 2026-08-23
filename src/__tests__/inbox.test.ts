@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { tmpdir } from "node:os";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import path from "node:path";
 import type { PendingMessage } from "../types.js";
 
@@ -31,9 +31,8 @@ function msg(id: string, text: string): PendingMessage {
 
 beforeEach(() => {
   mkdirSync(inboxDir, { recursive: true });
-  for (const f of ["s1.json", "s1.json.reading." + process.pid]) {
-    rmSync(path.join(inboxDir, f), { force: true });
-  }
+  rmSync(path.join(inboxDir, "s1.json"), { force: true });
+  rmSync(path.join(inboxDir, "s1.json.lock"), { recursive: true, force: true });
 });
 
 afterAll(() => rmSync(testHome, { recursive: true, force: true }));
@@ -52,18 +51,26 @@ describe("inbox", () => {
     expect(got.map((m) => m.text)).toEqual(["hello", "world"]);
   });
 
-  it("read drains the inbox (atomic rename, file left empty of messages)", () => {
+  it("read drains the inbox and leaves it empty", () => {
     writeToInbox("s1", msg("1", "a"));
     readInbox("s1");
     expect(peekInbox("s1")).toBe(0);
     expect(readInbox("s1")).toEqual([]);
   });
 
-  it("a message written after a drain is not lost", () => {
+  it("a message written after a drain is not lost and not duplicated", () => {
     writeToInbox("s1", msg("1", "a"));
-    expect(readInbox("s1").length).toBe(1);
+    expect(readInbox("s1").map((m) => m.text)).toEqual(["a"]);
     writeToInbox("s1", msg("2", "b"));
+    // "a" must not reappear; only the new message is delivered, exactly once.
     expect(readInbox("s1").map((m) => m.text)).toEqual(["b"]);
+    expect(readInbox("s1")).toEqual([]);
+  });
+
+  it("releases the lock after each operation", () => {
+    writeToInbox("s1", msg("1", "a"));
+    readInbox("s1");
+    expect(existsSync(path.join(inboxDir, "s1.json.lock"))).toBe(false);
   });
 
   it("tolerates a corrupt inbox file", () => {
