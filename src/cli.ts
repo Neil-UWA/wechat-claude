@@ -5,14 +5,14 @@
 //   wechat-claude login            (re)authenticate by scanning a QR code
 //   wechat-claude status           show daemon / login state
 //   wechat-claude daemon [cmd]     run or manage the background daemon
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ILinkClient } from "./ilink.js";
 import { pkgFile } from "./pkg-root.js";
-import { DAEMON_PID_FILE, WECHAT_DIR } from "./paths.js";
+import { DAEMON_PID_FILE, ensureDirs, WECHAT_DIR } from "./paths.js";
 import * as launchd from "./launchd.js";
 
 const DAEMON_JS = fileURLToPath(new URL("./daemon.js", import.meta.url));
@@ -116,6 +116,48 @@ function status(): void {
     out("\nStart the daemon with `wechat-claude daemon` (or it auto-starts via /wechat).");
 }
 
+// Stop the running daemon and wait for the pid to actually go away, so the
+// replacement does not lose its own singleton race against the old process.
+function stopDaemon(): boolean {
+  let pid: number;
+  try {
+    pid = parseInt(fs.readFileSync(DAEMON_PID_FILE, "utf-8").trim(), 10);
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return false;
+  }
+  for (let i = 0; i < 50; i++) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    spawnSync("sleep", ["0.1"]);
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {}
+  return true;
+}
+
+function startDaemonDetached(): boolean {
+  try {
+    ensureDirs();
+    const logFd = fs.openSync(DAEMON_LOG, "a");
+    const child = spawn(process.execPath, [DAEMON_JS], {
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+    });
+    child.unref();
+    fs.closeSync(logFd);
+    out(`  ✓ daemon started (pid ${child.pid}), logging to ${DAEMON_LOG}`);
+    return true;
+  } catch (err) {
+    out(`  ! could not start the daemon: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 function daemon(sub: string | undefined): number {
   switch (sub) {
     case undefined:
@@ -135,6 +177,19 @@ function daemon(sub: string | undefined): number {
       const ok = launchd.load();
       out(ok ? "  ✓ service loaded (starts at login, restarts on crash)" : "  ! launchctl load failed");
       return ok ? 0 : 1;
+    }
+    case "restart": {
+      // A running daemon holds the old code in memory, so an upgrade only
+      // takes effect once it is replaced. Under launchd, let it do the
+      // restarting; otherwise stop the process and spawn a fresh detached one.
+      if (launchd.isMac() && launchd.isLoaded()) {
+        const ok = launchd.load();
+        out(ok ? "  ✓ launchd service restarted" : "  ! launchctl reload failed");
+        return ok ? 0 : 1;
+      }
+      if (stopDaemon()) out("  ✓ stopped the running daemon");
+      else out("  • no daemon was running");
+      return startDaemonDetached() ? 0 : 1;
     }
     case "uninstall": {
       if (!launchd.isMac()) {
@@ -162,7 +217,7 @@ function daemon(sub: string | undefined): number {
     }
     default:
       out(`Unknown daemon command: ${sub}`);
-      out("Usage: wechat-claude daemon [run|install|uninstall|status|log]");
+      out("Usage: wechat-claude daemon [run|restart|install|uninstall|status|log]");
       return 1;
   }
 }
@@ -174,6 +229,7 @@ function usage(): void {
   out("  wechat-claude login              (re)authenticate by scanning a QR code");
   out("  wechat-claude status             show daemon / login state");
   out("  wechat-claude daemon             run the daemon in the foreground");
+  out("  wechat-claude daemon restart     restart it (use after an upgrade)");
   out("  wechat-claude daemon install     install it as a launchd service (macOS)");
   out("  wechat-claude daemon uninstall   remove the launchd service");
   out("  wechat-claude daemon status      check daemon / service state");

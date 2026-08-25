@@ -166,6 +166,7 @@ wechat-claude setup              # Register MCP server + /wechat command, then l
 wechat-claude login              # (Re)authenticate by scanning a QR code
 wechat-claude status             # Show login / daemon / service state
 wechat-claude daemon             # Run the daemon in the foreground
+wechat-claude daemon restart     # Restart it (use after upgrading)
 wechat-claude daemon install     # Install as a launchd service (macOS)
 wechat-claude daemon uninstall   # Remove the launchd service
 wechat-claude daemon status      # Check daemon / service state
@@ -174,6 +175,20 @@ wechat-claude daemon log         # Tail the daemon log
 
 In a git checkout the same commands are available as npm scripts
 (`npm run daemon:install`, …), which just delegate to the CLI.
+
+### Upgrading
+
+```bash
+npm install -g wechat-claude-sessions@latest
+wechat-claude daemon restart
+```
+
+Both long-lived processes keep the old code in memory until they are replaced.
+`daemon restart` handles the daemon (reloading the launchd job when one is
+installed, otherwise stopping and respawning it). The MCP server belongs to
+Claude Code, so reconnect it there — `/mcp` → `wechat` → Reconnect — and run
+`/wechat` again to re-attach the inbox watcher, which is bound to the old
+server's pid.
 
 ## How It Works
 
