@@ -84,3 +84,25 @@ export function buildRunPrompt(task: string, fromUserId: string): string {
     "如果任务失败、被阻塞或需要用户决策，也必须通过 wechat_send_text 说明情况，并保持微信监控运行以等待用户回复。",
   ].join("\n");
 }
+
+// What an existing MCP registration points at, derived from `claude mcp get`
+// output. "current" means it already targets serverJs (matched as an exact
+// substring, so paths with spaces are fine); any other successful output is
+// "other" — an existing registration that needs replacing — even when no path
+// can be extracted from it. Only a failed `get` (stdout === undefined) means
+// there is no registration at all.
+export type McpRegistration =
+  | { kind: "none" }
+  | { kind: "current" }
+  | { kind: "other"; target?: string };
+
+export function classifyMcpRegistration(
+  stdout: string | undefined,
+  serverJs: string
+): McpRegistration {
+  if (stdout === undefined) return { kind: "none" };
+  if (stdout.includes(serverJs)) return { kind: "current" };
+  // Best-effort label for the message; absence must not change the outcome.
+  const target = stdout.match(/\S*dist[/\\]server\.js/)?.[0];
+  return { kind: "other", target };
+}

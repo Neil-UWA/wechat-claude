@@ -29,6 +29,11 @@ export function getBinding(userId: string): string | undefined {
   return readBindings()[userId];
 }
 
+// All current bindings (WeChat user id -> session id), for status reporting.
+export function listBindings(): Record<string, string> {
+  return readBindings();
+}
+
 export function setBinding(userId: string, sessionId: string): void {
   const bindings = readBindings();
   bindings[userId] = sessionId;

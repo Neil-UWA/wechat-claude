@@ -888,8 +888,16 @@ async function main(): Promise<void> {
         try {
           fs.writeFileSync(EXPIRED_FLAG_FILE, String(Date.now()));
         } catch {}
+        // The cursor belongs to the dead login session; a fresh login must
+        // start from a fresh cursor or getupdates may keep rejecting it.
+        try {
+          fs.unlinkSync(CURSOR_FILE);
+        } catch {}
         notifyMacOS(t().loginExpired);
-        break;
+        // The watcher setIntervals keep the event loop alive, so breaking out
+        // of the loop is not enough — without an explicit exit the process
+        // lingers, holds the pid file, and blocks launchd from restarting.
+        process.exit(1);
       }
       log(`Poll error: ${errMsg}`);
       await new Promise((r) => setTimeout(r, 5000));

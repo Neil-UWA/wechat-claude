@@ -95,11 +95,17 @@ export type WeixinMessage = {
   item_list: MessageItem[];
 };
 
+// Error reporting is inconsistent across the API: some responses carry `ret`,
+// others `errcode`/`errmsg` (e.g. {"errcode":-14,"errmsg":"session timeout"}).
+// Both must be checked — reading only `ret` lets an expired login poll forever
+// looking healthy while receiving nothing.
 export type GetUpdatesResponse = {
-  ret: number;
-  msgs: WeixinMessage[];
-  get_updates_buf: string;
-  longpolling_timeout_ms: number;
+  ret?: number;
+  errcode?: number;
+  errmsg?: string;
+  msgs?: WeixinMessage[];
+  get_updates_buf?: string;
+  longpolling_timeout_ms?: number;
 };
 
 export type GetConfigResponse = {

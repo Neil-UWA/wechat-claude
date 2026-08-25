@@ -488,6 +488,55 @@ describe("ILinkClient", () => {
       expect(client.isLoggedIn).toBe(false);
     });
 
+    it("handles session expiry reported as errcode=-14 (no ret field)", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+        mockFetchResponse({ errcode: -14, errmsg: "session timeout" })
+      ));
+
+      await expect(client.getUpdates()).rejects.toThrow("Session expired");
+      expect(client.isLoggedIn).toBe(false);
+    });
+
+    it("throws on a nonzero errcode instead of silently returning no messages", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+        mockFetchResponse({ errcode: -1, errmsg: "internal error" })
+      ));
+
+      await expect(client.getUpdates()).rejects.toThrow(
+        "getupdates error -1: internal error"
+      );
+      expect(client.isLoggedIn).toBe(true);
+    });
+
+    it("expiry in errcode wins even when ret is 0", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+        mockFetchResponse({ ret: 0, errcode: -14, errmsg: "session timeout" })
+      ));
+
+      await expect(client.getUpdates()).rejects.toThrow("Session expired");
+      expect(client.isLoggedIn).toBe(false);
+    });
+
+    it("throws on a nonzero ret code", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+        mockFetchResponse({ ret: -7, msgs: [], get_updates_buf: "" })
+      ));
+
+      await expect(client.getUpdates()).rejects.toThrow("getupdates error -7");
+    });
+
     it("throws when not logged in", async () => {
       const client = new ILinkClient();
       await expect(client.getUpdates()).rejects.toThrow("Not logged in");

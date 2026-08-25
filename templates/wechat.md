@@ -15,6 +15,6 @@ Start WeChat message monitoring for this session.
    - Call `wechat_get_messages` to read and clear the inbox
    - Process the message content (answer questions, execute tasks, etc.)
    - Reply via `wechat_send_text` with the result; use `wechat_send_image` for images
-7. Confirm to the user that WeChat monitoring is active.
+7. Confirm to the user that WeChat monitoring is active. Check the `Routing` / `Binding` lines in the `wechat_status` output: if a binding routes plain messages to a **different** session (or the default target is another session), tell the user explicitly — to receive plain messages here they should send `/use <n>` in WeChat to bind this session (see `/ls` for numbers). `/use off` only removes an existing binding; messages then go to the default target (the most recently active monitored session), which is not necessarily this one.
 
 Fallback: if the Monitor tool is unavailable, use ScheduleWakeup with a 60-second interval and call `wechat_get_messages` on each wakeup (note: without the watcher heartbeat, this session will not show as `[monitoring]`, but messages explicitly routed here with `/s` still arrive).
