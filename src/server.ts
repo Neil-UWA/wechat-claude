@@ -10,6 +10,7 @@ import { ILinkClient } from "./ilink.js";
 import { PKG_ROOT } from "./pkg-root.js";
 import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js";
 import { isMonitoring, touchHeartbeat } from "./monitoring.js";
+import { routingLines } from "./routing.js";
 import {
   DAEMON_PID_FILE,
   EXPIRED_FLAG_FILE,
@@ -389,6 +390,7 @@ server.tool(
       `Session: ${sessionName.value} (id: ${sessionId})`,
       `Inbox: ${inboxCount} message(s)`,
       `Watcher: ${monitoring ? "active — this session is monitoring messages" : "NOT active — messages routed here will sit unread"}`,
+      ...routingLines(sessionId),
       `Active sessions (${sessions.length}):`,
       ...sessions.map((s) => {
         const active = Date.now() - s.lastActive < 120_000 ? "●" : "○";
