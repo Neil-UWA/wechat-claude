@@ -17,6 +17,7 @@ const { ILinkClient } = await import("../ilink.js");
 const WECHAT_DIR = path.join(testHome, ".claude", "wechat");
 const SESSION_FILE = path.join(WECHAT_DIR, "session.json");
 const CONTEXT_TOKENS_FILE = path.join(WECHAT_DIR, "context_tokens.json");
+const OLD_SESSION_FILE = path.join(testHome, ".claude", "wechat-session.json");
 
 const TEST_SESSION = {
   botToken: "test-token",
@@ -114,6 +115,20 @@ describe("ILinkClient", () => {
       fs.writeFileSync(SESSION_FILE, JSON.stringify({ botToken: "x" }));
       const client = new ILinkClient();
       expect(client.tryRestoreSession()).toBe(false);
+    });
+
+    it("logout is not undone by a leftover legacy session file", () => {
+      // isLoggedIn re-reads from disk, so logout has to clear the pre-migration
+      // file too or the next check silently restores the session.
+      fs.writeFileSync(OLD_SESSION_FILE, JSON.stringify(TEST_SESSION));
+      const client = new ILinkClient();
+      expect(client.isLoggedIn).toBe(true);
+
+      client.logout();
+
+      expect(client.isLoggedIn).toBe(false);
+      expect(fs.existsSync(OLD_SESSION_FILE)).toBe(false);
+      expect(fs.existsSync(SESSION_FILE)).toBe(false);
     });
 
     it("logout clears all state and deletes session file", () => {

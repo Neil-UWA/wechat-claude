@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,10 +7,8 @@ export const PKG_ROOT = path.resolve(
   fileURLToPath(new URL("..", import.meta.url))
 );
 
-// Resolve a file shipped in templates/. Falls back to the repo-local copy so a
-// git checkout keeps working if templates/ was not built/copied.
+// Resolve a file shipped in templates/ — the one location for assets that must
+// reach users, listed in package.json "files" and present in the repo.
 export function pkgFile(relative: string): string {
-  const primary = path.join(PKG_ROOT, "templates", relative);
-  if (fs.existsSync(primary)) return primary;
-  return path.join(PKG_ROOT, relative);
+  return path.join(PKG_ROOT, "templates", relative);
 }

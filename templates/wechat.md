@@ -6,9 +6,9 @@ Start WeChat message monitoring for this session.
 4. Call `wechat_get_messages` once to process any pending messages.
 5. Start a persistent Monitor with the watcher command from the `wechat_status` output:
 
-   ```
-   node <wechat-claude>/dist/watch-inbox.js <session id>
-   ```
+   The command is printed verbatim by `wechat_status` — copy it from there
+   rather than composing it; the install path differs per machine. It looks
+   like `node /path/to/wechat-claude-sessions/dist/watch-inbox.js <session id>`.
 
    Use `persistent: true`. The watcher is event-driven (`fs.watch` on the inbox), prints one line per new delivery, and maintains the heartbeat file that marks this session as `[monitoring]` — the daemon prefers monitored sessions when routing messages without a `/s` prefix.
 6. When the Monitor emits an event:

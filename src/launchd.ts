@@ -8,7 +8,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { pkgFile } from "./pkg-root.js";
-import { WECHAT_DIR } from "./paths.js";
+import { ensureDirs, WECHAT_DIR } from "./paths.js";
 
 export const LABEL = "com.wechat-claude.daemon";
 export const PLIST_PATH = path.join(
@@ -33,6 +33,10 @@ function daemonPath(): string {
 }
 
 export function writePlist(): string {
+  // launchd refuses to start the job if StandardOutPath's parent is missing —
+  // `daemon install` can legitimately run before `setup` has created the tree.
+  ensureDirs();
+
   const template = pkgFile("com.wechat-claude.daemon.plist.template");
   const daemonJs = fileURLToPath(new URL("./daemon.js", import.meta.url));
   const logPath = path.join(WECHAT_DIR, "daemon.log");

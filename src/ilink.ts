@@ -78,11 +78,15 @@ export class ILinkClient {
     return false;
   }
 
+  // Clear both files: isLoggedIn re-reads from disk when it has no token, so
+  // leaving the legacy file behind would silently undo a logout.
   private clearSessionFile(): void {
-    try {
-      if (fs.existsSync(SESSION_FILE)) fs.unlinkSync(SESSION_FILE);
-    } catch {
-      // non-fatal
+    for (const file of [SESSION_FILE, OLD_SESSION_FILE]) {
+      try {
+        if (fs.existsSync(file)) fs.unlinkSync(file);
+      } catch {
+        // non-fatal
+      }
     }
   }
   private updatesCursor = "";
