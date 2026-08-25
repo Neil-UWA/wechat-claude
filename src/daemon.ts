@@ -35,6 +35,7 @@ import {
   sortedSessions,
 } from "./sessions.js";
 import { writeToInbox } from "./inbox.js";
+import { ensureBypassAccepted } from "./claude-config.js";
 import { type Lang, formatAgo, getLang, marker, t } from "./i18n.js";
 import {
   hasTmux,
@@ -461,6 +462,12 @@ function handleRunCommand(
   const permFlag = auto
     ? "--dangerously-skip-permissions"
     : "--permission-mode acceptEdits";
+
+  // Skip-permissions mode has a one-time consent dialog. The session starts
+  // detached with nobody to answer it, so accept it up front or the task hangs
+  // on the prompt forever while /runs reports it as running.
+  const justAccepted = auto ? ensureBypassAccepted() : false;
+  if (justAccepted) log("Accepted bypassPermissionsModeAccepted in ~/.claude.json");
   // The command string is passed to tmux as a single argv element (no outer
   // shell), so "$task" is expanded by the shell tmux starts — not by us. The
   // task file path uses only our sanitized session name, so single-quoting it
@@ -490,7 +497,7 @@ function handleRunCommand(
       task,
       auto ? m.permSkip : m.permSafe,
       sessionName
-    )
+    ) + (justAccepted ? `\n\n${m.bypassAutoAccepted}` : "")
   );
 }
 
