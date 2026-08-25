@@ -17,6 +17,14 @@ Key facts to understand:
   unattended without per-action confirmation. Use `/run --safe <task>` for
   `--permission-mode acceptEdits` (bash commands then wait for confirmation at
   the computer).
+- **The first such `/run` accepts skip-permissions mode on your behalf.**
+  Claude Code gates that mode behind a one-time interactive dialog, which a
+  detached tmux session can never answer — the task would hang on the prompt
+  forever. So the daemon sets `bypassPermissionsModeAccepted` in
+  `~/.claude.json` before launching, and says so in its reply the one time it
+  does. If you would rather grant that yourself, accept the dialog once by
+  running `claude --dangerously-skip-permissions` at the computer, or stay on
+  `/run --safe`, which never touches the flag.
 - **The bot token is stored at `~/.claude/wechat/session.json`** (mode 0600).
   The whole `~/.claude/wechat/` directory is created 0700. Anyone with read
   access to your home directory can impersonate your bot.

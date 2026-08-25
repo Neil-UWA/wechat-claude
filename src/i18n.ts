@@ -98,6 +98,8 @@ type Msgs = {
     sessionName: string
   ) => string;
   runStartFailed: (err: string) => string;
+  bypassAutoAccepted: string;
+  bypassUnavailable: (configFile: string) => string;
   permSkip: string;
   permSafe: string;
   // /runs, /stop
@@ -207,6 +209,10 @@ const zh: Msgs = {
   runStarted: (cwd, task, perm, sessionName) =>
     `已启动 Claude session\n\n目录: ${cwd}\n任务: ${task}\n权限: ${perm}\ntmux: ${sessionName}\n\n完成后结果会发回微信。\n/runs 查看运行中的任务，/stop ${sessionName} 可终止。\n回到电脑后可运行: tmux attach -t ${sessionName}`,
   runStartFailed: (err) => `启动失败: ${err}`,
+  bypassAutoAccepted:
+    "提示: 已在 ~/.claude.json 中接受 Claude Code 的免确认模式（bypassPermissionsModeAccepted）。否则 /run 启动的 session 会停在一次性确认对话框上，无人应答而永久卡住。仅需一次。",
+  bypassUnavailable: (configFile) =>
+    `无法启动任务: 读写 ${configFile} 失败，没能确认免确认模式已开启。直接启动会永久卡在确认对话框上，所以取消了。\n\n解决办法: 在电脑上运行一次 claude --dangerously-skip-permissions 并接受，或改用 /run --safe <任务>。`,
   permSkip: "跳过确认（默认）",
   permSafe: "仅自动接受编辑 (--safe)",
   runsNone: "当前没有 /run 启动的任务 session。",
@@ -315,6 +321,10 @@ const en: Msgs = {
   runStarted: (cwd, task, perm, sessionName) =>
     `Started a Claude session\n\nDir: ${cwd}\nTask: ${task}\nPermissions: ${perm}\ntmux: ${sessionName}\n\nThe result will come back to WeChat.\n/runs to list, /stop ${sessionName} to cancel.\nAt the computer: tmux attach -t ${sessionName}`,
   runStartFailed: (err) => `Failed to start: ${err}`,
+  bypassAutoAccepted:
+    "Note: accepted Claude Code's skip-permissions mode in ~/.claude.json (bypassPermissionsModeAccepted). Without it a /run session stops at a one-time confirmation dialog that nobody is there to answer. One time only.",
+  bypassUnavailable: (configFile) =>
+    `Cannot start the task: ${configFile} could not be read or written, so skip-permissions mode is not confirmed as accepted. Launching anyway would hang on the consent dialog forever, so the run was cancelled.\n\nFix: run claude --dangerously-skip-permissions once at the computer and accept it, or use /run --safe <task>.`,
   permSkip: "skip confirmations (default)",
   permSafe: "auto-accept edits only (--safe)",
   runsNone: "No /run task sessions right now.",

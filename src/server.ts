@@ -7,6 +7,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ILinkClient } from "./ilink.js";
+import { PKG_ROOT } from "./pkg-root.js";
 import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js";
 import { isMonitoring, touchHeartbeat } from "./monitoring.js";
 import {
@@ -27,6 +28,17 @@ import {
 
 const DAEMON_LOG_FILE = path.join(WECHAT_DIR, "daemon.log");
 const DAEMON_PATH = fileURLToPath(new URL("./daemon.js", import.meta.url));
+
+// Report the installed package's version rather than a hardcoded one that
+// drifts from package.json. npm always ships package.json, `files` or not.
+const PKG_VERSION: string = (() => {
+  try {
+    const raw = fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf-8");
+    return (JSON.parse(raw) as { version?: string }).version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
 const WATCHER_PATH = fileURLToPath(new URL("./watch-inbox.js", import.meta.url));
 
 function ensureDirs(): void {
@@ -130,7 +142,7 @@ function clearTyping(userId: string): void {
   } catch {}
 }
 
-const server = new McpServer({ name: "wechat-claude", version: "2.0.0" });
+const server = new McpServer({ name: "wechat-claude", version: PKG_VERSION });
 
 server.tool(
   "wechat_login",
@@ -195,7 +207,7 @@ server.tool(
           ? daemon.autoStarted
             ? "Daemon auto-started."
             : "Daemon already running."
-          : "Daemon could not be started — run: node <wechat-claude>/dist/daemon.js";
+          : `Daemon could not be started — run: wechat-claude daemon (or node ${DAEMON_PATH})`;
         return {
           content: [
             {
@@ -395,7 +407,7 @@ server.tool(
     if (!daemon.running && client.isLoggedIn) {
       lines.push(
         "",
-        `Daemon is NOT running and auto-start failed. Check ${DAEMON_LOG_FILE}, or start manually: node ${DAEMON_PATH}`
+        `Daemon is NOT running and auto-start failed. Check ${DAEMON_LOG_FILE}, or start manually: wechat-claude daemon (or node ${DAEMON_PATH} if the bin is not on PATH)`
       );
     }
     if (!monitoring) {
