@@ -1,19 +1,37 @@
 {
   "name": "wechat-claude",
   "version": "2.0.0",
-  "description": "Control Claude Code via WeChat using ilink Bot API",
+  "description": "Control Claude Code via WeChat using the ilink Bot API",
   "type": "module",
+  "license": "MIT",
+  "author": "Neil Lu",
+  "homepage": "https://github.com/Neil-UWA/wechat-claude",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Neil-UWA/wechat-claude.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "main": "dist/server.js",
   "bin": {
-    "wechat-claude": "dist/server.js"
+    "wechat-claude": "dist/cli.js"
   },
+  "files": [
+    "dist",
+    "com.wechat-claude.daemon.plist.template",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "start": "node dist/server.js",
     "daemon": "node dist/daemon.js",
-    "daemon:install": "cp com.wechat-claude.daemon.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.wechat-claude.daemon.plist",
+    "daemon:install": "node scripts/gen-plist.mjs && cp com.wechat-claude.daemon.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.wechat-claude.daemon.plist",
     "daemon:uninstall": "launchctl unload ~/Library/LaunchAgents/com.wechat-claude.daemon.plist && rm ~/Library/LaunchAgents/com.wechat-claude.daemon.plist",
     "daemon:status": "launchctl list | grep wechat-claude",
     "daemon:log": "tail -f ~/.claude/wechat/daemon.log"

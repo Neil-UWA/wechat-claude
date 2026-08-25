@@ -7,21 +7,10 @@
 // and maintains a heartbeat file so the daemon knows this session is
 // actively monitored. Exits when the session's MCP server goes away.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { clearHeartbeat, touchHeartbeat } from "./monitoring.js";
-
-const WECHAT_DIR = path.join(os.homedir(), ".claude", "wechat");
-const SESSIONS_DIR = path.join(WECHAT_DIR, "sessions");
-const INBOX_DIR = path.join(WECHAT_DIR, "inbox");
-
-type SessionInfo = {
-  id: string;
-  name: string;
-  cwd: string;
-  pid: number;
-  lastActive: number;
-};
+import { INBOX_DIR, SESSIONS_DIR } from "./paths.js";
+import type { SessionInfo } from "./sessions.js";
 
 function resolveSessionByCwd(): string | undefined {
   let best: SessionInfo | undefined;

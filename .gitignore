@@ -1,3 +1,6 @@
 node_modules/
 dist/
 *.tsbuildinfo
+
+# generated from com.wechat-claude.daemon.plist.template by scripts/gen-plist.mjs
+com.wechat-claude.daemon.plist

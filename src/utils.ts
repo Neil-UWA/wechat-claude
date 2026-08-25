@@ -1,15 +1,17 @@
 import crypto from "node:crypto";
+import { type Lang, marker } from "./i18n.js";
 import type { WeixinMessage } from "./types.js";
 
-export function extractText(msg: WeixinMessage): string {
+export function extractText(msg: WeixinMessage, lang: Lang = "zh"): string {
   const parts: string[] = [];
   for (const item of msg.item_list) {
     if (item.type === 1) parts.push(item.text_item.text);
     else if (item.type === 3 && item.voice_item.text)
-      parts.push(`[语音转文字] ${item.voice_item.text}`);
-    else if (item.type === 2) parts.push("[图片]");
-    else if (item.type === 4) parts.push(`[文件: ${item.file_item.file_name}]`);
-    else if (item.type === 5) parts.push("[视频]");
+      parts.push(marker("voice", lang, item.voice_item.text));
+    else if (item.type === 2) parts.push(marker("image", lang));
+    else if (item.type === 4)
+      parts.push(marker("file", lang, item.file_item.file_name));
+    else if (item.type === 5) parts.push(marker("video", lang));
   }
   return parts.join("\n");
 }
@@ -48,16 +50,6 @@ export function imageExtension(buf: Buffer): string {
   if (buf.length >= 4 && buf.subarray(0, 4).toString("ascii") === "GIF8") return "gif";
   if (buf.length >= 12 && buf.subarray(8, 12).toString("ascii") === "WEBP") return "webp";
   return "jpg";
-}
-
-// Human-readable relative time for session listings.
-export function formatAgo(ms: number): string {
-  if (ms < 60_000) return "刚刚";
-  const m = Math.floor(ms / 60_000);
-  if (m < 60) return `${m} 分钟前`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h} 小时前`;
-  return `${Math.floor(h / 24)} 天前`;
 }
 
 // Parse leading flags of a "/run" argument string.
