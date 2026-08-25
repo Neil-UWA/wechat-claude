@@ -21,6 +21,7 @@
     "dist",
     "templates",
     "README.md",
+    "README.en.md",
     "LICENSE"
   ],
   "scripts": {

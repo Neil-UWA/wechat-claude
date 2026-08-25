@@ -47,5 +47,6 @@ wechat-claude daemon install
 
 - Keep PRs focused; include tests for new behavior.
 - Run `npm run build && npm test` before pushing — CI runs the same.
-- Describe user-facing changes so `/help`, the README, and MCP tool
+- Describe user-facing changes so `/help`, both READMEs (`README.md` is the
+  Chinese default, `README.en.md` the English version — keep them in sync), and MCP tool
   descriptions can be kept in sync.
