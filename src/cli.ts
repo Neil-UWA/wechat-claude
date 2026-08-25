@@ -23,23 +23,57 @@ function out(s: string): void {
   process.stdout.write(s + "\n");
 }
 
-function run(cmd: string, args: string[]): boolean {
-  const r = spawnSync(cmd, args, { stdio: "inherit" });
-  return r.status === 0;
+const MCP_NAME = "wechat";
+
+function mcpAdd(): boolean {
+  return (
+    spawnSync("claude", ["mcp", "add", "--scope", "user", MCP_NAME, "node", SERVER_JS], {
+      stdio: ["ignore", "pipe", "pipe"],
+    }).status === 0
+  );
+}
+
+// What the registration currently points at, or undefined if there is none.
+// `claude mcp get` prints a human-readable block; we only need our own path
+// out of it, so look for it rather than parsing the format.
+function mcpRegisteredPath(): string | undefined {
+  const r = spawnSync("claude", ["mcp", "get", MCP_NAME], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (r.status !== 0 || !r.stdout) return undefined;
+  const text = r.stdout.toString();
+  const match = text.match(/\S*dist[/\\]server\.js/);
+  return match?.[0];
 }
 
 function registerMcpServer(): void {
-  out(`→ Registering MCP server (claude mcp add wechat)…`);
-  const ok = run("claude", [
-    "mcp",
-    "add",
-    "--scope",
-    "user",
-    "wechat",
-    "node",
-    SERVER_JS,
-  ]);
-  out(ok ? "  ✓ registered" : "  ! failed (is the `claude` CLI on your PATH?)");
+  out(`→ Registering MCP server (claude mcp add ${MCP_NAME})…`);
+
+  // `claude mcp add` refuses a name that already exists — and exits 0 while
+  // doing so. Taking that as success left every upgrade pointing at the old
+  // install, which breaks as soon as that copy is gone. So replace an existing
+  // registration rather than trusting the exit code.
+  mcpAdd();
+  let registered = mcpRegisteredPath();
+
+  if (registered !== undefined && registered !== SERVER_JS) {
+    out(`  • replacing a registration that points at ${registered}`);
+    spawnSync("claude", ["mcp", "remove", "--scope", "user", MCP_NAME], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    mcpAdd();
+    registered = mcpRegisteredPath();
+  }
+
+  if (registered === SERVER_JS) {
+    out("  ✓ registered");
+  } else if (registered === undefined) {
+    out("  ! failed — is the `claude` CLI on your PATH?");
+    out(`    Register it manually: claude mcp add --scope user ${MCP_NAME} node ${SERVER_JS}`);
+  } else {
+    out(`  ! still registered to ${registered}, not this install`);
+    out(`    Fix it with: claude mcp remove --scope user ${MCP_NAME}`);
+  }
 }
 
 function installSlashCommand(): void {
