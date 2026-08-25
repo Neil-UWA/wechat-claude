@@ -93,14 +93,49 @@ async function login(): Promise<boolean> {
   }
 }
 
-function daemonRunning(): boolean {
+// A pid file can outlive a crash, and the OS reuses pids — so never signal or
+// trust a pid without confirming the process is actually one of our daemons.
+function isDaemonProcess(pid: number): boolean {
+  const r = spawnSync("ps", ["-o", "command=", "-p", String(pid)], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (r.status !== 0 || !r.stdout) return false;
+  const cmd = r.stdout.toString().trim();
+  // Match any install's daemon.js, not just this one: after an upgrade the
+  // running daemon legitimately comes from the previous install path.
+  return /\bnode\b/.test(cmd) && /daemon\.js(\s|$)/.test(cmd);
+}
+
+// The daemon's pid, or undefined when the pid file is absent or stale. Removes
+// a stale file so the next reader is not misled by it.
+function readDaemonPid(): number | undefined {
+  let pid: number;
   try {
-    const pid = parseInt(fs.readFileSync(DAEMON_PID_FILE, "utf-8").trim(), 10);
-    process.kill(pid, 0);
-    return true;
+    pid = parseInt(fs.readFileSync(DAEMON_PID_FILE, "utf-8").trim(), 10);
   } catch {
-    return false;
+    return undefined;
   }
+  if (!Number.isFinite(pid) || pid <= 0) return undefined;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    try {
+      fs.unlinkSync(DAEMON_PID_FILE);
+    } catch {}
+    return undefined;
+  }
+  if (!isDaemonProcess(pid)) {
+    out(`  ! pid file points at pid ${pid}, which is not a wechat-claude daemon — ignoring it`);
+    try {
+      fs.unlinkSync(DAEMON_PID_FILE);
+    } catch {}
+    return undefined;
+  }
+  return pid;
+}
+
+function daemonRunning(): boolean {
+  return readDaemonPid() !== undefined;
 }
 
 function status(): void {
@@ -119,9 +154,9 @@ function status(): void {
 // Stop the running daemon and wait for the pid to actually go away, so the
 // replacement does not lose its own singleton race against the old process.
 function stopDaemon(): boolean {
-  let pid: number;
+  const pid = readDaemonPid();
+  if (pid === undefined) return false;
   try {
-    pid = parseInt(fs.readFileSync(DAEMON_PID_FILE, "utf-8").trim(), 10);
     process.kill(pid, "SIGTERM");
   } catch {
     return false;
@@ -134,28 +169,44 @@ function stopDaemon(): boolean {
     }
     spawnSync("sleep", ["0.1"]);
   }
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch {}
+  // Re-check identity before escalating: over five seconds the daemon could
+  // have exited and its pid been handed to something else.
+  if (isDaemonProcess(pid)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  }
   return true;
 }
 
+// Spawning only proves node launched. The daemon exits non-zero when there is
+// no saved session, so wait for it to claim the pid file before reporting it up.
 function startDaemonDetached(): boolean {
+  let child;
   try {
     ensureDirs();
     const logFd = fs.openSync(DAEMON_LOG, "a");
-    const child = spawn(process.execPath, [DAEMON_JS], {
+    child = spawn(process.execPath, [DAEMON_JS], {
       detached: true,
       stdio: ["ignore", logFd, logFd],
     });
     child.unref();
     fs.closeSync(logFd);
-    out(`  ✓ daemon started (pid ${child.pid}), logging to ${DAEMON_LOG}`);
-    return true;
   } catch (err) {
     out(`  ! could not start the daemon: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
+
+  for (let i = 0; i < 50; i++) {
+    if (readDaemonPid() === child.pid) {
+      out(`  ✓ daemon started (pid ${child.pid}), logging to ${DAEMON_LOG}`);
+      return true;
+    }
+    spawnSync("sleep", ["0.1"]);
+  }
+  out(`  ! the daemon exited during startup — check ${DAEMON_LOG}`);
+  out("    (a missing WeChat login is the usual cause: run `wechat-claude login`)");
+  return false;
 }
 
 function daemon(sub: string | undefined): number {
@@ -174,6 +225,11 @@ function daemon(sub: string | undefined): number {
       }
       const plist = launchd.writePlist();
       out(`→ Wrote ${plist}`);
+      // Hand the singleton over to launchd first. Otherwise its child hits the
+      // daemon's pid-file guard and exits 0 — and KeepAlive.SuccessfulExit
+      // false means launchd never retries, so the job supervises nothing while
+      // still reporting success.
+      if (stopDaemon()) out("  ✓ stopped the existing daemon so launchd can own it");
       const ok = launchd.load();
       out(ok ? "  ✓ service loaded (starts at login, restarts on crash)" : "  ! launchctl load failed");
       return ok ? 0 : 1;

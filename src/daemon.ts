@@ -35,7 +35,7 @@ import {
   sortedSessions,
 } from "./sessions.js";
 import { writeToInbox } from "./inbox.js";
-import { ensureBypassAccepted } from "./claude-config.js";
+import { CLAUDE_CONFIG_FILE, ensureBypassAccepted } from "./claude-config.js";
 import { type Lang, formatAgo, getLang, marker, t } from "./i18n.js";
 import {
   hasTmux,
@@ -465,9 +465,17 @@ function handleRunCommand(
 
   // Skip-permissions mode has a one-time consent dialog. The session starts
   // detached with nobody to answer it, so accept it up front or the task hangs
-  // on the prompt forever while /runs reports it as running.
-  const justAccepted = auto ? ensureBypassAccepted() : false;
-  if (justAccepted) log("Accepted bypassPermissionsModeAccepted in ~/.claude.json");
+  // on the prompt forever while /runs reports it as running. If we cannot
+  // confirm the acceptance, refuse to launch rather than create that hang.
+  const bypass = auto ? ensureBypassAccepted() : "already";
+  if (bypass === "accepted")
+    log("Accepted bypassPermissionsModeAccepted in ~/.claude.json");
+  if (bypass === "failed") {
+    log(`Could not accept skip-permissions mode in ${CLAUDE_CONFIG_FILE}`);
+    sendReply(m.bypassUnavailable(CLAUDE_CONFIG_FILE));
+    try { fs.unlinkSync(taskFile); } catch {}
+    return;
+  }
   // The command string is passed to tmux as a single argv element (no outer
   // shell), so "$task" is expanded by the shell tmux starts — not by us. The
   // task file path uses only our sanitized session name, so single-quoting it
@@ -497,7 +505,7 @@ function handleRunCommand(
       task,
       auto ? m.permSkip : m.permSafe,
       sessionName
-    ) + (justAccepted ? `\n\n${m.bypassAutoAccepted}` : "")
+    ) + (bypass === "accepted" ? `\n\n${m.bypassAutoAccepted}` : "")
   );
 }
 

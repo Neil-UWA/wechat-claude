@@ -26,7 +26,7 @@ describe("claude-config", () => {
   it("accepts once and leaves the rest of the config intact", () => {
     write({ theme: "dark", projects: { a: 1 } });
 
-    expect(ensureBypassAccepted(CONFIG)).toBe(true);
+    expect(ensureBypassAccepted(CONFIG)).toBe("accepted");
     expect(isBypassAccepted(CONFIG)).toBe(true);
 
     const saved = JSON.parse(fs.readFileSync(CONFIG, "utf-8"));
@@ -36,7 +36,7 @@ describe("claude-config", () => {
 
   it("is a no-op when already accepted", () => {
     write({ bypassPermissionsModeAccepted: true });
-    expect(ensureBypassAccepted(CONFIG)).toBe(false);
+    expect(ensureBypassAccepted(CONFIG)).toBe("already");
     expect(isBypassAccepted(CONFIG)).toBe(true);
   });
 
@@ -47,14 +47,25 @@ describe("claude-config", () => {
     expect(strays).toEqual([]);
   });
 
-  it("does not create a config that does not exist", () => {
-    expect(ensureBypassAccepted(CONFIG)).toBe(false);
+  it("reports failure rather than creating a config that does not exist", () => {
+    expect(ensureBypassAccepted(CONFIG)).toBe("failed");
     expect(fs.existsSync(CONFIG)).toBe(false);
   });
 
   it("does not treat a corrupt config as accepted", () => {
     fs.writeFileSync(CONFIG, "{ not json");
     expect(isBypassAccepted(CONFIG)).toBe(false);
-    expect(ensureBypassAccepted(CONFIG)).toBe(false);
+    expect(ensureBypassAccepted(CONFIG)).toBe("failed");
+  });
+
+  it("reports failure when the config cannot be written", () => {
+    write({ theme: "dark" });
+    fs.chmodSync(dir, 0o500); // no write permission on the directory
+    try {
+      expect(ensureBypassAccepted(CONFIG)).toBe("failed");
+      expect(isBypassAccepted(CONFIG)).toBe(false);
+    } finally {
+      fs.chmodSync(dir, 0o700);
+    }
   });
 });

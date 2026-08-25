@@ -32,6 +32,15 @@ function daemonPath(): string {
   return [...new Set(pathEntries)].join(":");
 }
 
+// The plist is XML: a home directory or install path containing & or < would
+// otherwise produce a malformed file that launchctl refuses to load.
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
 export function writePlist(): string {
   // launchd refuses to start the job if StandardOutPath's parent is missing —
   // `daemon install` can legitimately run before `setup` has created the tree.
@@ -43,10 +52,10 @@ export function writePlist(): string {
 
   const filled = fs
     .readFileSync(template, "utf-8")
-    .replaceAll("__NODE__", process.execPath)
-    .replaceAll("__DAEMON_JS__", daemonJs)
-    .replaceAll("__LOG__", logPath)
-    .replaceAll("__PATH__", daemonPath());
+    .replaceAll("__NODE__", escapeXml(process.execPath))
+    .replaceAll("__DAEMON_JS__", escapeXml(daemonJs))
+    .replaceAll("__LOG__", escapeXml(logPath))
+    .replaceAll("__PATH__", escapeXml(daemonPath()));
 
   fs.mkdirSync(path.dirname(PLIST_PATH), { recursive: true });
   fs.writeFileSync(PLIST_PATH, filled);
