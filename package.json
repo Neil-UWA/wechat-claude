@@ -22,6 +22,8 @@
     "templates",
     "README.md",
     "README.en.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
     "LICENSE"
   ],
   "scripts": {

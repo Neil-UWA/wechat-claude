@@ -95,15 +95,24 @@ async function login(): Promise<boolean> {
 
 // A pid file can outlive a crash, and the OS reuses pids — so never signal or
 // trust a pid without confirming the process is actually one of our daemons.
-function isDaemonProcess(pid: number): boolean {
+// "unknown" keeps the two failure modes apart: a probe we could not run must
+// not be read as a mismatch, or we would discard a live daemon's pid file.
+type Identity = "daemon" | "other" | "unknown";
+
+function identifyProcess(pid: number): Identity {
+  if (process.platform === "win32") return "unknown"; // no ps
   const r = spawnSync("ps", ["-o", "command=", "-p", String(pid)], {
     stdio: ["ignore", "pipe", "ignore"],
   });
-  if (r.status !== 0 || !r.stdout) return false;
-  const cmd = r.stdout.toString().trim();
+  // A missing/broken ps is "unknown"; ps running and finding nothing is a real
+  // answer, but the caller only asks about pids it has already seen alive.
+  if (r.error) return "unknown";
+  if (r.status !== 0) return "other";
+  const cmd = (r.stdout ?? "").toString().trim();
+  if (cmd === "") return "unknown";
   // Match any install's daemon.js, not just this one: after an upgrade the
   // running daemon legitimately comes from the previous install path.
-  return /\bnode\b/.test(cmd) && /daemon\.js(\s|$)/.test(cmd);
+  return /\bnode\b/.test(cmd) && /daemon\.js(\s|$)/.test(cmd) ? "daemon" : "other";
 }
 
 // The daemon's pid, or undefined when the pid file is absent or stale. Removes
@@ -124,13 +133,16 @@ function readDaemonPid(): number | undefined {
     } catch {}
     return undefined;
   }
-  if (!isDaemonProcess(pid)) {
+  if (identifyProcess(pid) === "other") {
     out(`  ! pid file points at pid ${pid}, which is not a wechat-claude daemon — ignoring it`);
     try {
       fs.unlinkSync(DAEMON_PID_FILE);
     } catch {}
     return undefined;
   }
+  // "unknown" (Windows, or no usable ps) falls through: an unverifiable pid is
+  // still the best information we have, and treating it as stale would delete
+  // a live daemon's pid file and let a second poller start.
   return pid;
 }
 
@@ -170,11 +182,14 @@ function stopDaemon(): boolean {
     spawnSync("sleep", ["0.1"]);
   }
   // Re-check identity before escalating: over five seconds the daemon could
-  // have exited and its pid been handed to something else.
-  if (isDaemonProcess(pid)) {
+  // have exited and its pid been handed to something else. Only a confirmed
+  // daemon gets SIGKILL — "unknown" is not good enough to kill on.
+  if (identifyProcess(pid) === "daemon") {
     try {
       process.kill(pid, "SIGKILL");
     } catch {}
+  } else {
+    out(`  ! pid ${pid} did not exit and can no longer be confirmed as the daemon — not forcing it`);
   }
   return true;
 }
