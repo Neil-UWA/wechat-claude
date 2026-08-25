@@ -93,6 +93,16 @@ describe("ILinkClient", () => {
       expect(client.baseUrl).toBe(TEST_SESSION.baseUrl);
     });
 
+    it("picks up a login that happened after the client was created", () => {
+      // A long-lived MCP server starts before `wechat-claude login` runs; its
+      // isLoggedIn must notice the session file appearing, not cache "false".
+      const client = new ILinkClient();
+      expect(client.isLoggedIn).toBe(false);
+      fs.writeFileSync(SESSION_FILE, JSON.stringify(TEST_SESSION));
+      expect(client.isLoggedIn).toBe(true);
+      expect(client.baseUrl).toBe(TEST_SESSION.baseUrl);
+    });
+
     it("tryRestoreSession returns false when no file exists", () => {
       const client = new ILinkClient();
       const restored = client.tryRestoreSession();

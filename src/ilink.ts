@@ -53,11 +53,12 @@ export class ILinkClient {
     }
   }
 
-  tryRestoreSession(): boolean {
+  tryRestoreSession(quiet = false): boolean {
     for (const file of [SESSION_FILE, OLD_SESSION_FILE]) {
       try {
         if (!fs.existsSync(file)) {
-          process.stderr.write(`[wechat-claude] Session file not found: ${file}\n`);
+          if (!quiet)
+            process.stderr.write(`[wechat-claude] Session file not found: ${file}\n`);
           continue;
         }
         const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Session;
@@ -114,7 +115,11 @@ export class ILinkClient {
     }
   }
 
+  // Re-read the session file when we have no token in memory: a long-lived MCP
+  // server started before `wechat-claude login` ran would otherwise report
+  // "not logged in" for the rest of its life. Quiet, since this is polled.
   get isLoggedIn(): boolean {
+    if (this.session === null) this.tryRestoreSession(true);
     return this.session !== null;
   }
 
