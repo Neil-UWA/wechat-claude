@@ -27,7 +27,7 @@ export function routingLines(selfId: string): string[] {
       lines.push(`Binding: ${userId} → this session`);
     } else {
       lines.push(
-        `Binding: ${userId} → ${label(target)} — plain messages from this user will NOT arrive in this session. In WeChat, send "/use off" to unbind, or "/use <n>" (see /ls) to bind a different session.`
+        `Binding: ${userId} → ${label(target)} — plain messages from this user will NOT arrive in this session. In WeChat, "/use <n>" (see /ls) binds a session; "/use off" only removes the binding, after which messages go to the default target.`
       );
     }
   }

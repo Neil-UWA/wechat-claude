@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createCipheriv, randomBytes } from "node:crypto";
-import { extractText, aesEcbPaddedSize, buildRunPrompt, decryptCdnMedia, imageExtension, parseRunFlags } from "../utils.js";
+import { classifyMcpRegistration, extractText, aesEcbPaddedSize, buildRunPrompt, decryptCdnMedia, imageExtension, parseRunFlags } from "../utils.js";
 import type { WeixinMessage, MessageItem } from "../types.js";
 
 const CDN_STUB = { encrypt_query_param: "", aes_key: "", encrypt_type: 0 };
@@ -226,5 +226,32 @@ describe("imageExtension", () => {
     expect(imageExtension(Buffer.from("GIF89a"))).toBe("gif");
     expect(imageExtension(Buffer.concat([Buffer.from("RIFF1234"), Buffer.from("WEBPxx")]))).toBe("webp");
     expect(imageExtension(Buffer.from("unknown-bytes"))).toBe("jpg");
+  });
+});
+
+describe("classifyMcpRegistration", () => {
+  const serverJs = "/Users/someone/My Dir/wechat-claude-sessions/dist/server.js";
+
+  it("a failed get (no stdout) means no registration", () => {
+    expect(classifyMcpRegistration(undefined, serverJs)).toEqual({ kind: "none" });
+  });
+
+  it("recognizes the current install even when the path contains spaces", () => {
+    const output = `wechat:\n  Command: node ${serverJs}\n  Scope: user\n`;
+    expect(classifyMcpRegistration(output, serverJs)).toEqual({ kind: "current" });
+  });
+
+  it("another install's path is an existing registration to replace", () => {
+    const output = "wechat:\n  Command: node /old/install/dist/server.js\n";
+    expect(classifyMcpRegistration(output, serverJs)).toEqual({
+      kind: "other",
+      target: "/old/install/dist/server.js",
+    });
+  });
+
+  it("successful but unparseable output is still an existing registration, never none", () => {
+    const output = "wechat:\n  Command: some-wrapper --serve\n";
+    const result = classifyMcpRegistration(output, serverJs);
+    expect(result.kind).toBe("other");
   });
 });

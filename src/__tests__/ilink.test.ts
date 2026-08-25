@@ -514,6 +514,18 @@ describe("ILinkClient", () => {
       expect(client.isLoggedIn).toBe(true);
     });
 
+    it("expiry in errcode wins even when ret is 0", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+        mockFetchResponse({ ret: 0, errcode: -14, errmsg: "session timeout" })
+      ));
+
+      await expect(client.getUpdates()).rejects.toThrow("Session expired");
+      expect(client.isLoggedIn).toBe(false);
+    });
+
     it("throws on a nonzero ret code", async () => {
       const client = new ILinkClient();
       client.setSession(TEST_SESSION);

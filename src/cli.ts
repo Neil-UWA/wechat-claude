@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { ILinkClient } from "./ilink.js";
 import { pkgFile } from "./pkg-root.js";
 import { DAEMON_PID_FILE, ensureDirs, WECHAT_DIR } from "./paths.js";
+import { type McpRegistration, classifyMcpRegistration } from "./utils.js";
 import * as launchd from "./launchd.js";
 
 const DAEMON_JS = fileURLToPath(new URL("./daemon.js", import.meta.url));
@@ -33,17 +34,19 @@ function mcpAdd(): boolean {
   );
 }
 
-// What the registration currently points at, or undefined if there is none.
-// `claude mcp get` prints a human-readable block; we only need our own path
-// out of it, so look for it rather than parsing the format.
-function mcpRegisteredPath(): string | undefined {
+// What the registration currently points at. `claude mcp get` prints a
+// human-readable block; classifyMcpRegistration looks for this install's
+// exact path in it (robust to spaces in the path) and treats any successful
+// output that lacks it as an existing registration to replace — a get that
+// succeeds must never be read as "no registration", or the stale entry
+// survives and `claude mcp add` keeps no-opping against it.
+function mcpRegistration(): McpRegistration {
   const r = spawnSync("claude", ["mcp", "get", MCP_NAME], {
     stdio: ["ignore", "pipe", "ignore"],
   });
-  if (r.status !== 0 || !r.stdout) return undefined;
-  const text = r.stdout.toString();
-  const match = text.match(/\S*dist[/\\]server\.js/);
-  return match?.[0];
+  const stdout =
+    r.status === 0 && r.stdout ? r.stdout.toString() : undefined;
+  return classifyMcpRegistration(stdout, SERVER_JS);
 }
 
 function registerMcpServer(): void {
@@ -54,24 +57,26 @@ function registerMcpServer(): void {
   // install, which breaks as soon as that copy is gone. So replace an existing
   // registration rather than trusting the exit code.
   mcpAdd();
-  let registered = mcpRegisteredPath();
+  let registered = mcpRegistration();
 
-  if (registered !== undefined && registered !== SERVER_JS) {
-    out(`  • replacing a registration that points at ${registered}`);
+  if (registered.kind === "other") {
+    out(
+      `  • replacing a registration that points at ${registered.target ?? "another install"}`
+    );
     spawnSync("claude", ["mcp", "remove", "--scope", "user", MCP_NAME], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     mcpAdd();
-    registered = mcpRegisteredPath();
+    registered = mcpRegistration();
   }
 
-  if (registered === SERVER_JS) {
+  if (registered.kind === "current") {
     out("  ✓ registered");
-  } else if (registered === undefined) {
+  } else if (registered.kind === "none") {
     out("  ! failed — is the `claude` CLI on your PATH?");
     out(`    Register it manually: claude mcp add --scope user ${MCP_NAME} node ${SERVER_JS}`);
   } else {
-    out(`  ! still registered to ${registered}, not this install`);
+    out(`  ! still registered to ${registered.target ?? "another install"}, not this install`);
     out(`    Fix it with: claude mcp remove --scope user ${MCP_NAME}`);
   }
 }

@@ -248,15 +248,20 @@ export class ILinkClient {
     if (!res.ok) throw new Error(`getupdates failed: ${res.status}`);
     const data = (await res.json()) as GetUpdatesResponse;
 
-    const code = data.ret ?? data.errcode ?? 0;
-    if (code === -14) {
+    // Check both fields, expiry first: `ret ?? errcode` would pick a ret of 0
+    // over an errcode of -14 and leave the expired session looking healthy.
+    const codes = [data.ret, data.errcode].filter(
+      (c): c is number => typeof c === "number"
+    );
+    if (codes.includes(-14)) {
       this.session = null;
       this.clearSessionFile();
       throw new Error("Session expired, please login again");
     }
-    if (code !== 0) {
+    const errCode = codes.find((c) => c !== 0);
+    if (errCode !== undefined) {
       throw new Error(
-        `getupdates error ${code}${data.errmsg ? `: ${data.errmsg}` : ""}`
+        `getupdates error ${errCode}${data.errmsg ? `: ${data.errmsg}` : ""}`
       );
     }
 
