@@ -248,10 +248,16 @@ export class ILinkClient {
     if (!res.ok) throw new Error(`getupdates failed: ${res.status}`);
     const data = (await res.json()) as GetUpdatesResponse;
 
-    if (data.ret === -14) {
+    const code = data.ret ?? data.errcode ?? 0;
+    if (code === -14) {
       this.session = null;
       this.clearSessionFile();
       throw new Error("Session expired, please login again");
+    }
+    if (code !== 0) {
+      throw new Error(
+        `getupdates error ${code}${data.errmsg ? `: ${data.errmsg}` : ""}`
+      );
     }
 
     if (data.get_updates_buf) {
