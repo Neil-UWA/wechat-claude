@@ -1,6 +1,6 @@
 {
-  "name": "wechat-claude",
-  "version": "2.0.0",
+  "name": "wechat-claude-sessions",
+  "version": "1.0.0",
   "description": "Control Claude Code via WeChat using the ilink Bot API",
   "type": "module",
   "license": "MIT",
@@ -19,8 +19,7 @@
   },
   "files": [
     "dist",
-    "com.wechat-claude.daemon.plist.template",
-    "scripts",
+    "templates",
     "README.md",
     "LICENSE"
   ],
@@ -30,11 +29,11 @@
     "build": "tsc",
     "prepublishOnly": "npm run build",
     "start": "node dist/server.js",
-    "daemon": "node dist/daemon.js",
-    "daemon:install": "node scripts/gen-plist.mjs && cp com.wechat-claude.daemon.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.wechat-claude.daemon.plist",
-    "daemon:uninstall": "launchctl unload ~/Library/LaunchAgents/com.wechat-claude.daemon.plist && rm ~/Library/LaunchAgents/com.wechat-claude.daemon.plist",
-    "daemon:status": "launchctl list | grep wechat-claude",
-    "daemon:log": "tail -f ~/.claude/wechat/daemon.log"
+    "daemon": "node dist/cli.js daemon",
+    "daemon:install": "node dist/cli.js daemon install",
+    "daemon:uninstall": "node dist/cli.js daemon uninstall",
+    "daemon:status": "node dist/cli.js daemon status",
+    "daemon:log": "node dist/cli.js daemon log"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

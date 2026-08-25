@@ -195,7 +195,7 @@ server.tool(
           ? daemon.autoStarted
             ? "Daemon auto-started."
             : "Daemon already running."
-          : "Daemon could not be started — run: node <wechat-claude>/dist/daemon.js";
+          : "Daemon could not be started — run: wechat-claude daemon";
         return {
           content: [
             {

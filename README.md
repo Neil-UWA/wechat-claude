@@ -29,12 +29,14 @@ WeChat User ←→ ilink Bot API ←→ Daemon (polling + routing) ←→ Inbox 
 ## Setup
 
 ```bash
-git clone https://github.com/Neil-UWA/wechat-claude.git
-cd wechat-claude
-npm install
-npm run build
-npx wechat-claude setup
+npm install -g wechat-claude-sessions
+wechat-claude setup
 ```
+
+Install it **globally**, not with a bare `npx` — `setup` registers absolute
+paths (MCP server, launchd service) that must survive past the current shell,
+and npx's cache is not a stable location. Building from a git checkout works
+too: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 `setup` registers the MCP server, installs the `/wechat` slash command into
 `~/.claude/commands/`, and walks you through QR login (it opens the QR image in
@@ -45,9 +47,9 @@ expires.
 Then start the daemon and enable monitoring:
 
 ```bash
-npm run daemon:install   # macOS: install as a launchd service (auto-start + restart)
+wechat-claude daemon install   # macOS: install as a launchd service (auto-start + restart)
 # or, without autostart:
-npm run daemon           # run it in the foreground / your own supervisor
+wechat-claude daemon           # run it in the foreground / your own supervisor
 ```
 
 Finally, type `/wechat` in any Claude Code session. That starts a persistent
@@ -56,9 +58,11 @@ watcher (`dist/watch-inbox.js`) that reacts to messages instantly via
 `/wechat` and after a successful login if it isn't already running (it's a
 singleton, guarded by a pid file).
 
-`npm run daemon:install` generates the launchd plist for *your* paths from a
-template (`scripts/gen-plist.mjs`) — no manual editing. Other CLI commands:
-`npx wechat-claude login` (re-auth) and `npx wechat-claude status`.
+`wechat-claude daemon install` generates the launchd plist for *your* paths
+from a packaged template and writes it to
+`~/Library/LaunchAgents/com.wechat-claude.daemon.plist` — no manual editing.
+Re-run it after a Node version switch or a global upgrade to refresh the paths.
+Other CLI commands: `wechat-claude login` (re-auth) and `wechat-claude status`.
 
 If the WeChat login expires, the daemon posts a macOS notification and sets a
 flag that `wechat_status` surfaces, so the next `/wechat` prompts a re-login —
@@ -155,17 +159,21 @@ Use `wechat_set_session_name` to set a custom name.
     └── <userId>
 ```
 
-## npm Scripts
+## CLI
 
 ```bash
-npm run build              # Compile TypeScript
-npm run start              # Start MCP server (used by Claude Code)
-npm run daemon             # Start daemon manually
-npm run daemon:install     # Install launchd service (macOS)
-npm run daemon:uninstall   # Remove launchd service
-npm run daemon:status      # Check launchd status
-npm run daemon:log         # Tail daemon log
+wechat-claude setup              # Register MCP server + /wechat command, then log in
+wechat-claude login              # (Re)authenticate by scanning a QR code
+wechat-claude status             # Show login / daemon / service state
+wechat-claude daemon             # Run the daemon in the foreground
+wechat-claude daemon install     # Install as a launchd service (macOS)
+wechat-claude daemon uninstall   # Remove the launchd service
+wechat-claude daemon status      # Check daemon / service state
+wechat-claude daemon log         # Tail the daemon log
 ```
+
+In a git checkout the same commands are available as npm scripts
+(`npm run daemon:install`, …), which just delegate to the CLI.
 
 ## How It Works
 
@@ -208,24 +216,26 @@ wechat-claude executes code on your machine in response to chat messages. Read
 
 - **The bot stopped replying.** The WeChat login likely expired — the daemon
   exits on expiry and can no longer send messages. Back at the Mac, run
-  `npx wechat-claude status`; if logged out, `npx wechat-claude login` (or
+  `wechat-claude status`; if logged out, `wechat-claude login` (or
   `/wechat` in a session) to re-scan. Restart the daemon if needed.
 - **`/run` says "找不到目录".** The name didn't resolve to a project; add its
   parent to `repoDirs` in `~/.claude/wechat/config.json`, pass an absolute
   path, or use `/run . <task>` to run in the default directory.
-- **A message got no response.** Check `npm run daemon:status` and
-  `npm run daemon:log`. If the target session isn't `[monitoring]`, run
+- **A message got no response.** Check `wechat-claude daemon status` and
+  `wechat-claude daemon log`. If the target session isn't `[monitoring]`, run
   `/wechat` in it or bind with `/use <n>`.
-- **`daemon:install` did nothing on Linux/Windows.** launchd is macOS-only;
-  run the daemon under your own supervisor (`npm run daemon`, systemd, pm2…).
+- **`daemon install` did nothing on Linux/Windows.** launchd is macOS-only;
+  run the daemon under your own supervisor (`wechat-claude daemon`, systemd,
+  pm2…).
 
 ## Uninstall
 
 ```bash
-npm run daemon:uninstall        # remove the launchd service (macOS)
+wechat-claude daemon uninstall  # remove the launchd service (macOS)
 claude mcp remove wechat        # unregister the MCP server
 rm ~/.claude/commands/wechat.md # remove the slash command
 rm -rf ~/.claude/wechat         # remove tokens, inboxes, media, config
+npm uninstall -g wechat-claude-sessions
 ```
 
 ## Requirements

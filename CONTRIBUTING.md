@@ -5,12 +5,29 @@ Thanks for your interest in wechat-claude!
 ## Development setup
 
 ```bash
+git clone https://github.com/Neil-UWA/wechat-claude.git
+cd wechat-claude
 npm install
 npm run build
 npm test
 ```
 
+To run your checkout as the real thing (instead of the published package),
+link it and then set up as usual:
+
+```bash
+npm link                 # puts the `wechat-claude` bin on your PATH
+wechat-claude setup
+wechat-claude daemon install
+```
+
 - Source is TypeScript in `src/`, compiled to `dist/` (gitignored).
+- Files shipped to users live in `templates/` — the `/wechat` slash command
+  and the launchd plist template. `.claude/commands/wechat.md` is a symlink
+  to `templates/wechat.md`, so edit the template and both stay in sync.
+- The CLI (`src/cli.ts`) is the only entry point users have after a global
+  install; the `daemon:*` npm scripts just delegate to it. Add new operations
+  as CLI subcommands, not as npm scripts.
 - Tests use [vitest](https://vitest.dev): `npm test` (or `npm run test:watch`).
 - The daemon and MCP server share logic through small modules
   (`src/sessions.ts`, `src/inbox.ts`, `src/tmux.ts`, etc.) — add behavior
