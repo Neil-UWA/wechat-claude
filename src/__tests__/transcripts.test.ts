@@ -7,6 +7,7 @@ import {
   latestTranscriptMtime,
   looksStalled,
   projectDirName,
+  transcriptPath,
 } from "../transcripts.js";
 
 const root = mkdtempSync(path.join(tmpdir(), "wc-transcripts-test-"));
@@ -49,16 +50,41 @@ describe("looksStalled", () => {
   it("is false while the session keeps writing (busy, not blocked)", () => {
     const cwd = "/Users/me/repos/busy";
     writeTranscript(cwd, "a.jsonl", 5_000);
-    expect(looksStalled(cwd, 60_000, Date.now(), root)).toBe(false);
+    expect(looksStalled({ cwd }, 60_000, Date.now(), root)).toBe(false);
   });
 
   it("is true when nothing has been written for a while", () => {
     const cwd = "/Users/me/repos/quiet";
     writeTranscript(cwd, "a.jsonl", 300_000);
-    expect(looksStalled(cwd, 60_000, Date.now(), root)).toBe(true);
+    expect(looksStalled({ cwd }, 60_000, Date.now(), root)).toBe(true);
   });
 
   it("treats an unknown project as no evidence, not as stalled", () => {
-    expect(looksStalled("/Users/me/unknown", 60_000, Date.now(), root)).toBe(false);
+    expect(looksStalled({ cwd: "/Users/me/unknown" }, 60_000, Date.now(), root)).toBe(
+      false
+    );
+  });
+
+  it("judges the session's own transcript, not a busy neighbour's", () => {
+    const cwd = "/Users/me/repos/shared";
+    writeTranscript(cwd, "mine.jsonl", 300_000);
+    writeTranscript(cwd, "neighbour.jsonl", 1_000);
+    const session = { cwd, transcript: transcriptPath(cwd, "mine", root) };
+    expect(looksStalled(session, 60_000, Date.now(), root)).toBe(true);
+  });
+
+  it("is not fooled into a stall by a neighbour's old transcript", () => {
+    const cwd = "/Users/me/repos/shared2";
+    writeTranscript(cwd, "stale.jsonl", 900_000);
+    writeTranscript(cwd, "mine.jsonl", 1_000);
+    const session = { cwd, transcript: transcriptPath(cwd, "mine", root) };
+    expect(looksStalled(session, 60_000, Date.now(), root)).toBe(false);
+  });
+
+  it("falls back to the directory when the recorded transcript is gone", () => {
+    const cwd = "/Users/me/repos/moved";
+    writeTranscript(cwd, "current.jsonl", 300_000);
+    const session = { cwd, transcript: transcriptPath(cwd, "deleted", root) };
+    expect(looksStalled(session, 60_000, Date.now(), root)).toBe(true);
   });
 });

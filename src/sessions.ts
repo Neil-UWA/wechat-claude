@@ -10,6 +10,11 @@ export type SessionInfo = {
   cwd: string;
   pid: number;
   lastActive: number;
+  // Absolute path to this session's Claude Code transcript, when the MCP
+  // server could work it out. Lets the daemon tell whether *this* session is
+  // still doing anything (see transcripts.ts). Absent for sessions registered
+  // by an older build.
+  transcript?: string;
 };
 
 // Derive a human-friendly session name from a working directory:

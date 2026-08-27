@@ -12,6 +12,7 @@ import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js
 import { isMonitoring, touchHeartbeat } from "./monitoring.js";
 import { markReplied } from "./replies.js";
 import { routingLines } from "./routing.js";
+import { transcriptPath } from "./transcripts.js";
 import { readUsageState, resetHint } from "./usage.js";
 import {
   DAEMON_PID_FILE,
@@ -101,12 +102,19 @@ const sessionName = { value: detectSessionName() };
 const client = new ILinkClient();
 
 function currentSessionInfo(): SessionInfo {
+  // Claude Code passes its own session id to MCP servers; it is the transcript
+  // file's name, which is how the daemon can watch this exact session for
+  // signs of life instead of guessing from the project directory.
+  const claudeSessionId = process.env.CLAUDE_CODE_SESSION_ID;
   return {
     id: sessionId,
     name: sessionName.value,
     cwd: process.cwd(),
     pid: process.pid,
     lastActive: Date.now(),
+    transcript: claudeSessionId
+      ? transcriptPath(process.cwd(), claudeSessionId)
+      : undefined,
   };
 }
 
@@ -299,7 +307,7 @@ server.tool(
       await client.sendText(to_user_id, text);
       // Tells the daemon this session actually answered, so its silence
       // watchdog (usage-limit detection) stops tracking the delivery.
-      markReplied(to_user_id);
+      markReplied(sessionId, to_user_id);
       await client.sendTyping(to_user_id, false);
       return {
         content: [
@@ -345,7 +353,7 @@ server.tool(
       }
       clearTyping(to_user_id);
       await client.sendImage(to_user_id, file_path, caption);
-      markReplied(to_user_id);
+      markReplied(sessionId, to_user_id);
       await client.sendTyping(to_user_id, false);
       return {
         content: [

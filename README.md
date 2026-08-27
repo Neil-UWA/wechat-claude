@@ -90,13 +90,15 @@ wechat-claude daemon           # 前台运行 / 交给你自己的进程管理�
 Claude 账号一旦触达用量上限，**所有** session 会同时哑掉：模型调用被拒绝，消息既没人读、
 也没人回，从微信看和 daemon 挂了一模一样。为此 daemon 会自己判断：
 
-1. 一条已投递的消息 90 秒没有得到回复，**并且**目标 session 的 transcript
-   （`~/.claude/projects/…jsonl`）也 60 秒没有任何写入 —— 即它不是在忙，而是真的停住了 ——
-   daemon 会跑一次 headless 探测（`claude -p ok`，不加载任何 MCP server）。
+1. 一条已投递的消息 90 秒没有得到回复，**并且**目标 session 自己的 transcript
+   （`~/.claude/projects/…jsonl`，由 MCP server 记下确切路径，不会被同目录下别的 session
+   干扰）也 60 秒没有任何写入 —— 即它不是在忙，而是真的停住了 —— daemon 会跑一次 headless
+   探测（`claude -p ok`，不加载任何 MCP server）。
 2. 探测确认是用量上限，daemon 会主动在微信里说明情况，附上预计恢复时间，并且不再发那条
    容易误导人的"session 可能没在监控"提醒。期间新发的消息照常投递，但会附一条提示。
-3. 上限解除后，daemon 会再发一条"已恢复"，并戳一下还压着消息的 session，让它们的 watcher
-   重新播报积压的 inbox —— 否则那条播报早就过去了，消息会一直没人处理。
+3. 上限解除后，daemon 会再发一条"已恢复"，并把没被回答的消息重新推起来：还留在 inbox 里的，
+   戳一下让 watcher 重新播报（否则那条播报早过去了）；已经被读走、但还没来得及回复的（inbox
+   已经被清空，没东西可播报），会先塞回 inbox 再播报。只有确实没得到回复的才会重来，不会重复处理。
 
 探测本身要花一点点额度，所以：同一时间只跑一个；正常状态下最多 5 分钟一次；确认受限之后
 探测是免费的（请求被直接拒绝），有明确恢复时间时会等到那个时间点再查。
@@ -167,8 +169,8 @@ Session 会根据工作目录自动命名：
 ├── cursor.txt            # 消息轮询游标
 ├── expired.flag          # 微信登录过期时存在
 ├── usage-limit.json      # 已知的 Claude 用量上限状态（含已通知的用户）
-├── replies/              # 各微信用户最近一次收到回复的时间戳
-│   └── <userId>
+├── replies/              # 各 session 最近一次回复各微信用户的时间戳
+│   └── <pid>--<userId>
 ├── nudge/                # 让 watcher 重播积压 inbox 的信号（上限解除后）
 │   └── <pid>
 ├── sessions/             # 已注册的 Claude Code session

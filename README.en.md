@@ -101,16 +101,20 @@ from WeChat that is indistinguishable from a dead daemon. So the daemon works
 it out itself:
 
 1. A delivered message with no reply for 90 seconds, **and** a target session
-   whose transcript (`~/.claude/projects/….jsonl`) hasn't been written for 60
-   seconds — i.e. it isn't busy, it is stuck — triggers one headless probe
-   (`claude -p ok`, with no MCP servers loaded).
+   whose *own* transcript (`~/.claude/projects/….jsonl` — the MCP server records
+   the exact path, so a busy neighbour sharing the directory can't mask it)
+   hasn't been written for 60 seconds — i.e. it isn't busy, it is stuck —
+   triggers one headless probe (`claude -p ok`, with no MCP servers loaded).
 2. If the probe confirms a usage limit, the daemon says so on WeChat with the
    expected reset time, and suppresses the misleading "that session may not be
    monitoring" reminder. Messages you send meanwhile are still delivered, with
    a note attached.
-3. When the limit lifts, the daemon sends a recovery message and nudges every
-   session still holding messages, so its watcher re-announces the backlog —
-   the original announcement is long gone and would never repeat.
+3. When the limit lifts, the daemon sends a recovery message and gets the
+   unanswered work moving: messages still in an inbox only need their watcher
+   poked (the original announcement is long gone and never repeats); messages
+   Claude *read* but never got to answer are put back in the inbox first, since
+   there is nothing left to announce. Only deliveries with no reply are
+   replayed, so nothing is handled twice.
 
 Probes cost a little quota, so: only one runs at a time; at most one every 5
 minutes while things look healthy; once a limit is confirmed probes are free
@@ -190,8 +194,8 @@ Use `wechat_set_session_name` to set a custom name.
 ├── cursor.txt            # message polling cursor
 ├── expired.flag          # present when the WeChat login has expired
 ├── usage-limit.json      # known Claude usage-limit state (incl. notified users)
-├── replies/              # last time each WeChat user got a reply
-│   └── <userId>
+├── replies/              # last time each session replied to each WeChat user
+│   └── <pid>--<userId>
 ├── nudge/                # signal to re-announce a backlog (after a limit lifts)
 │   └── <pid>
 ├── sessions/             # registered Claude Code sessions
