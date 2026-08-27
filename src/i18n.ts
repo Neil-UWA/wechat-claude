@@ -144,6 +144,19 @@ type Msgs = {
   legendNumbers: string;
   legendRoute: string;
   noRepoDirs: string;
+  // usage limit
+  usageLimited: (resetHint: string, waiting: string) => string;
+  usageRecovered: (mins: number, pending: string) => string;
+  usageNoteOnSend: (resetHint: string) => string;
+  usageChecking: string;
+  usageOk: string;
+  usageStatusLimited: (resetHint: string, mins: number) => string;
+  usageUnknown: (detail: string) => string;
+  usageResetUnknown: string;
+  usageMacNotice: (resetHint: string) => string;
+  usagePendingNudged: (count: number) => string;
+  usagePendingNone: string;
+  usageWaitingList: (body: string) => string;
   // config warnings
   cfgNotArray: string;
   cfgNonString: string;
@@ -177,6 +190,9 @@ const zh: Msgs = {
     "/close 3 — 关闭 3 号",
     "/close idle — 清理全部闲置",
     "/close myapp all — 关闭同名全部",
+    "",
+    "🩺 状态",
+    "/usage — 查 Claude 用量是否被限制（session 集体不回复时用）",
     "",
     "📌 备注",
     "· 编号固定不变，可用编号/名字/pid 选 session",
@@ -258,6 +274,25 @@ const zh: Msgs = {
   legendNumbers: "编号固定不变 · [监控中] = 正在读取消息",
   legendRoute: "用 /s <编号|名字|pid> <消息> 发送到指定 session，例: /s 1 你好",
   noRepoDirs: "  （无，可在 ~/.claude/wechat/config.json 配置 repoDirs）",
+  usageLimited: (resetHint, waiting) =>
+    `⚠️ Claude 用量已达上限，所有 session 现在都无法回复（不是掉线，消息已经收到了）。\n\n预计恢复: ${resetHint}\n${waiting}\n\n恢复后我会主动告诉你，并提醒 session 处理积压的消息。期间可以继续发消息，我会存好。\n发送 /usage 可随时查询。`,
+  usageRecovered: (mins, pending) =>
+    `✅ Claude 用量已恢复（受限 ${mins} 分钟）。${pending}`,
+  usageNoteOnSend: (resetHint) =>
+    `⚠️ 提醒: Claude 用量仍在上限中（预计 ${resetHint} 恢复），消息已存下，恢复后会处理。`,
+  usageChecking: "正在检查 Claude 用量状态…",
+  usageOk: "✅ Claude 用量正常，没有触发限制。\n如果 session 仍然不回，多半是它在忙或没有在监控消息，发送 /ls 看看。",
+  usageStatusLimited: (resetHint, mins) =>
+    `⚠️ Claude 用量已达上限（已持续 ${mins} 分钟）。\n预计恢复: ${resetHint}\n\n期间所有 session 都不会回复，消息会存下，恢复后再处理。`,
+  usageUnknown: (detail) =>
+    `没能确认用量状态（检查命令本身失败了）:\n${detail}\n\n可以到电脑上运行一次 claude -p ok 看看。`,
+  usageResetUnknown: "未知",
+  usageMacNotice: (resetHint) =>
+    `Claude 用量已达上限，所有 session 暂停响应（预计恢复: ${resetHint}）`,
+  usagePendingNudged: (count) =>
+    `已提醒 ${count} 个 session 处理积压的消息。`,
+  usagePendingNone: "没有待处理的消息。",
+  usageWaitingList: (body) => `等待处理的消息:\n${body}`,
   cfgNotArray: "config.json 的 repoDirs 必须是字符串数组",
   cfgNonString: "config.json 的 repoDirs 含非字符串项，已跳过",
   cfgNotAbsolute: (d) => `config.json 的 repoDirs 项 "${d}" 不是绝对路径，已跳过`,
@@ -289,6 +324,9 @@ const en: Msgs = {
     "/close 3 — close #3",
     "/close idle — close all idle sessions",
     "/close myapp all — close all with that name",
+    "",
+    "🩺 Status",
+    "/usage — check whether Claude's usage limit is blocking replies",
     "",
     "📌 Notes",
     "· Numbers are stable; select by number / name / pid",
@@ -369,6 +407,24 @@ const en: Msgs = {
   legendNumbers: "Numbers are stable · [monitoring] = actively reading messages",
   legendRoute: "Send to a session with /s <number|name|pid> <message>, e.g. /s 1 hello",
   noRepoDirs: "  (none — configure repoDirs in ~/.claude/wechat/config.json)",
+  usageLimited: (resetHint, waiting) =>
+    `⚠️ Claude's usage limit is reached — no session can reply right now (nothing crashed; your message did arrive).\n\nExpected reset: ${resetHint}\n${waiting}\n\nI'll tell you as soon as it lifts and nudge the sessions to handle what piled up. Keep sending — messages are kept.\nSend /usage to check any time.`,
+  usageRecovered: (mins, pending) =>
+    `✅ Claude usage is back (limited for ${mins}m). ${pending}`,
+  usageNoteOnSend: (resetHint) =>
+    `⚠️ Note: Claude is still over its usage limit (reset ${resetHint}). Your message is saved and will be handled once it lifts.`,
+  usageChecking: "Checking Claude usage…",
+  usageOk: "✅ Claude usage is fine — no limit hit.\nIf a session still isn't replying it's probably busy or not monitoring; send /ls to check.",
+  usageStatusLimited: (resetHint, mins) =>
+    `⚠️ Claude's usage limit is reached (for ${mins}m now).\nExpected reset: ${resetHint}\n\nUntil then no session replies; messages are kept and handled afterwards.`,
+  usageUnknown: (detail) =>
+    `Couldn't determine usage status (the check itself failed):\n${detail}\n\nTry running claude -p ok at the computer.`,
+  usageResetUnknown: "unknown",
+  usageMacNotice: (resetHint) =>
+    `Claude usage limit reached — all sessions are blocked (reset: ${resetHint})`,
+  usagePendingNudged: (count) => `Nudged ${count} session(s) to handle the backlog.`,
+  usagePendingNone: "Nothing was waiting.",
+  usageWaitingList: (body) => `Messages waiting:\n${body}`,
   cfgNotArray: "config.json repoDirs must be an array of strings",
   cfgNonString: "config.json repoDirs has a non-string entry; skipped",
   cfgNotAbsolute: (d) => `config.json repoDirs entry "${d}" isn't an absolute path; skipped`,

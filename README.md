@@ -78,11 +78,39 @@ wechat-claude daemon           # 前台运行 / 交给你自己的进程管理�
 | `/runs` | 列出运行中的 `/run` 任务 session |
 | `/stop <名字>` | 终止一个 `/run` 任务 session（名字以 `wc-` 开头） |
 | `/close <编号\|名字\|pid>` | 远程关闭一个 Claude session —— 终结它的 Claude 进程（以及 MCP server）并从列表移除。该 session 里未保存的工作会丢失。如果一个名字匹配到多个，会列出来而不是瞎猜；`/close <名字> all` 关闭全部匹配项，`/close idle` 清理所有闲置 2 小时以上且未被监控的 session。每次关闭的回复末尾都会附上剩余 session 概览 |
+| `/usage` | 查询 Claude 用量是否已达上限（session 集体不回复时用）。会跑一次极小的 headless 探测（默认用 Haiku，见下） |
 | `/help` | 显示命令帮助 |
 | *（无前缀）* | 发给最近活跃的**监控中** session（没有的话退回到最近活跃的那个） |
 
 **投递反馈**：如果消息落到了一个没在监控 inbox 的 session，daemon 会立刻警告你；如果一条
 已投递的消息 2 分钟后仍未被读取，它会再发一条提醒。
+
+### 用量上限（session 集体不回复）
+
+Claude 账号一旦触达用量上限，**所有** session 会同时哑掉：模型调用被拒绝，消息既没人读、
+也没人回，从微信看和 daemon 挂了一模一样。为此 daemon 会自己判断：
+
+1. 一条已投递的消息 90 秒没有得到回复，**并且**目标 session 的 transcript
+   （`~/.claude/projects/…jsonl`）也 60 秒没有任何写入 —— 即它不是在忙，而是真的停住了 ——
+   daemon 会跑一次 headless 探测（`claude -p ok`，不加载任何 MCP server）。
+2. 探测确认是用量上限，daemon 会主动在微信里说明情况，附上预计恢复时间，并且不再发那条
+   容易误导人的"session 可能没在监控"提醒。期间新发的消息照常投递，但会附一条提示。
+3. 上限解除后，daemon 会再发一条"已恢复"，并戳一下还压着消息的 session，让它们的 watcher
+   重新播报积压的 inbox —— 否则那条播报早就过去了，消息会一直没人处理。
+
+探测本身要花一点点额度，所以：同一时间只跑一个；正常状态下最多 5 分钟一次；确认受限之后
+探测是免费的（请求被直接拒绝），有明确恢复时间时会等到那个时间点再查。
+
+可选配置（`~/.claude/wechat/config.json`）：
+
+```json
+{ "probeModel": "claude-haiku-4-5-20251001", "claudeBin": "~/.local/bin/claude" }
+```
+
+- `probeModel` —— 探测用的模型，默认 Haiku（便宜，且订阅的用量上限是账号级的，拒绝同样会
+  发生）。设成 `"default"` 用你自己的默认模型 —— 如果你想抓的是 Opus 专属的周上限，就得这么设。
+- `claudeBin` —— `claude` 可执行文件路径，launchd 环境下 PATH 很干净时才需要（默认会依次
+  找 `~/.local/bin`、`~/.claude/local`、Homebrew、`/usr/local/bin`）。
 
 **图片**会被自动下载解密到 `~/.claude/wechat/media/`（保留 7 天）；路由后的消息文本里带
 本地路径（`[图片: /path/to/file.png]`），接收方的 Claude session 可以直接打开该文件。
@@ -138,6 +166,11 @@ Session 会根据工作目录自动命名：
 ├── daemon.log            # daemon 输出
 ├── cursor.txt            # 消息轮询游标
 ├── expired.flag          # 微信登录过期时存在
+├── usage-limit.json      # 已知的 Claude 用量上限状态（含已通知的用户）
+├── replies/              # 各微信用户最近一次收到回复的时间戳
+│   └── <userId>
+├── nudge/                # 让 watcher 重播积压 inbox 的信号（上限解除后）
+│   └── <pid>
 ├── sessions/             # 已注册的 Claude Code session
 │   └── <pid>.json
 ├── inbox/                # 各 session 的消息队列
@@ -189,6 +222,8 @@ wechat-claude daemon restart
 4. **MCP Server** 在 Claude 调用 `wechat_get_messages` 时读取自己的 inbox
 5. Claude 处理消息并通过 `wechat_send_text` 回复
 6. MCP server 清除输入状态文件，daemon 检测到后停止"正在输入"
+7. 如果长时间既没被读也没被回，daemon 会检查是不是撞上了 Claude 用量上限，并在微信里说明
+   （见[用量上限](#用量上限session-集体不回复)）
 
 ## 语言
 

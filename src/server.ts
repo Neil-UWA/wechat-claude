@@ -10,7 +10,9 @@ import { ILinkClient } from "./ilink.js";
 import { PKG_ROOT } from "./pkg-root.js";
 import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js";
 import { isMonitoring, touchHeartbeat } from "./monitoring.js";
+import { markReplied } from "./replies.js";
 import { routingLines } from "./routing.js";
+import { readUsageState, resetHint } from "./usage.js";
 import {
   DAEMON_PID_FILE,
   EXPIRED_FLAG_FILE,
@@ -295,6 +297,9 @@ server.tool(
     try {
       clearTyping(to_user_id);
       await client.sendText(to_user_id, text);
+      // Tells the daemon this session actually answered, so its silence
+      // watchdog (usage-limit detection) stops tracking the delivery.
+      markReplied(to_user_id);
       await client.sendTyping(to_user_id, false);
       return {
         content: [
@@ -340,6 +345,7 @@ server.tool(
       }
       clearTyping(to_user_id);
       await client.sendImage(to_user_id, file_path, caption);
+      markReplied(to_user_id);
       await client.sendTyping(to_user_id, false);
       return {
         content: [
@@ -398,6 +404,15 @@ server.tool(
         return `  ${active} ${s.name} (pid: ${s.pid})${mon}`;
       }),
     ];
+    // The daemon records this; a session that was rate-limited comes back with
+    // no idea why it went quiet, and the user is owed an explanation.
+    const usage = readUsageState();
+    if (usage.limited && (usage.resetAt === undefined || Date.now() < usage.resetAt)) {
+      lines.push(
+        "",
+        `Claude usage limit is currently reached (reset: ${resetHint(usage, Date.now()) ?? "unknown"}). All sessions are blocked from replying until it lifts; the daemon notified the user on WeChat and will nudge this session when it recovers.`
+      );
+    }
     if (isLoginExpired()) {
       lines.push(
         "",
