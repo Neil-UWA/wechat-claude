@@ -1,0 +1,41 @@
+name: Publish (dev)
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-dev
+  cancel-in-progress: false
+
+jobs:
+  publish-dev:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+      - name: Set prerelease version
+        id: version
+        run: |
+          BASE=$(node -p "require('./package.json').version.split('-')[0]")
+          VERSION="$BASE-dev.${{ github.run_number }}.$(git rev-parse --short HEAD)"
+          npm version "$VERSION" --no-git-tag-version
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "::notice::Publishing $VERSION under the dev tag."
+
+      - name: Publish to npm under the dev tag
+        run: npm publish --provenance --access public --tag dev
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
