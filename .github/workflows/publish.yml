@@ -1,20 +1,41 @@
-name: Publish (latest)
+name: Publish
 
+# Publishes to npm with Trusted Publishing (OIDC) — no NPM_TOKEN. npm mints a
+# short-lived credential from GitHub's OIDC identity, so the package settings
+# on npmjs.com must name this repository AND this workflow file as the trusted
+# publisher. That pairing is why latest and dev live in one file: a second
+# workflow filename would need a second trusted publisher npm won't give us.
+#
+# What gets published depends on the branch:
+#   main          -> the version in package.json, under `latest` (skipped if
+#                    that version is already on npm, so ordinary merges pass)
+#   dev           -> <base>-dev.<run>.<sha>, under `dev`
+#   any other ref -> <base>-dev.<branch>.<run>.<sha>, under `dev-<branch>`, so
+#                    one feature can be tested without whatever else sits on dev
+#
+# Manual runs publish from whatever branch they are dispatched on:
+#   gh workflow run publish.yml --ref my-feature-branch
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: "npm dist-tag to move (default: latest on main, dev on dev, dev-<branch> elsewhere)"
+        required: false
+        default: ""
 
 concurrency:
-  group: publish-latest
+  group: publish-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      id-token: write
+      contents: write # push the v<version> tag
+      id-token: write # mint the OIDC token npm exchanges for publish rights
+      pull-requests: write # report the published version on the branch's PR
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,31 +43,94 @@ jobs:
           node-version: 22
           cache: npm
           registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1+; the runner still ships npm 10.
+      - run: npm install -g npm@latest
+
       - run: npm ci
       - run: npm run build
       - run: npm test
 
-      - name: Check whether this version is already published
-        id: check
+      - name: Work out the version and dist-tag
+        id: version
         run: |
-          NAME=$(node -p "require('./package.json').name")
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
-            echo "published=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::$NAME@$VERSION is already on npm — skipping publish."
+          BRANCH="${{ github.ref_name }}"
+          BASE=$(node -p "require('./package.json').version.split('-')[0]")
+
+          if [ "$BRANCH" = "main" ]; then
+            VERSION=$(node -p "require('./package.json').version")
+            TAG=latest
           else
-            echo "published=false" >> "$GITHUB_OUTPUT"
+            # Branch names become semver prerelease identifiers, which only
+            # allow [0-9A-Za-z-], so fold everything else into a dash.
+            SLUG=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+            [ -n "$SLUG" ] || SLUG=branch
+
+            if [ "$BRANCH" = "dev" ]; then
+              VERSION="$BASE-dev.${{ github.run_number }}.$(git rev-parse --short HEAD)"
+              TAG=dev
+            else
+              VERSION="$BASE-dev.$SLUG.${{ github.run_number }}.$(git rev-parse --short HEAD)"
+              TAG="dev-$SLUG"
+            fi
+            npm version "$VERSION" --no-git-tag-version
           fi
 
-      - name: Publish to npm
-        if: steps.check.outputs.published == 'false'
-        run: npm publish --provenance --access public --tag latest
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          if [ -n "${{ inputs.dist_tag }}" ]; then
+            TAG="${{ inputs.dist_tag }}"
+          fi
 
-      - name: Tag the release commit
-        if: steps.check.outputs.published == 'false'
+          NAME=$(node -p "require('./package.json').name")
+          SKIP=false
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            SKIP=true
+            echo "::notice::$NAME@$VERSION is already on npm — skipping publish."
+          fi
+
+          {
+            echo "name=$NAME"
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+            echo "skip=$SKIP"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish to npm
+        if: steps.version.outputs.skip == 'false'
+        run: npm publish --provenance --access public --tag "${{ steps.version.outputs.tag }}"
+
+      - name: Tag the commit with what was published
+        if: steps.version.outputs.skip == 'false'
         run: |
-          git tag "v${{ steps.check.outputs.version }}"
-          git push origin "v${{ steps.check.outputs.version }}"
+          TAG="v${{ steps.version.outputs.version }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Say what was published
+        if: steps.version.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.version.outputs.name }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DIST_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          {
+            echo "### Published \`$NAME@$VERSION\`"
+            echo
+            echo "From branch \`${{ github.ref_name }}\`, under dist-tag \`$DIST_TAG\`."
+            echo
+            echo '```sh'
+            echo "npm i $NAME@$DIST_TAG  # follows this branch"
+            echo "npm i $NAME@$VERSION  # pins this exact build"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Leave the same note on the branch's open PR, if it has one, so the
+          # version is where the work is rather than only in the run log.
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number // empty')
+          [ -n "$PR" ] || exit 0
+          gh pr comment "$PR" --body "$(printf '%s\n' \
+            "📦 Published \`$NAME@$VERSION\` under dist-tag \`$DIST_TAG\`, from \`${{ github.sha }}\`." \
+            "" \
+            '```sh' \
+            "npm i $NAME@$DIST_TAG" \
+            '```')"
