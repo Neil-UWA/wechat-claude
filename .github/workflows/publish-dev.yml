@@ -27,8 +27,9 @@ jobs:
   publish-dev:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -70,16 +71,38 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Summarise how to install it
+      - name: Tag the commit with what was published
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Say what was published
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           NAME=$(node -p "require('./package.json').name")
+          VERSION="${{ steps.version.outputs.version }}"
+          DIST_TAG="${{ steps.version.outputs.tag }}"
+
           {
-            echo "### Published \`$NAME@${{ steps.version.outputs.version }}\`"
+            echo "### Published \`$NAME@$VERSION\`"
             echo
-            echo "From branch \`${{ github.ref_name }}\`, under dist-tag \`${{ steps.version.outputs.tag }}\`."
+            echo "From branch \`${{ github.ref_name }}\`, under dist-tag \`$DIST_TAG\`."
             echo
             echo '```sh'
-            echo "npm i $NAME@${{ steps.version.outputs.tag }}      # follows this branch"
-            echo "npm i $NAME@${{ steps.version.outputs.version }}  # pins this exact build"
+            echo "npm i $NAME@$DIST_TAG  # follows this branch"
+            echo "npm i $NAME@$VERSION  # pins this exact build"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+          # Leave the same note on the branch's open PR, if it has one, so the
+          # version is where the work is rather than only in the run log.
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number // empty')
+          [ -n "$PR" ] || exit 0
+          gh pr comment "$PR" --body "$(printf '%s\n' \
+            "📦 Published \`$NAME@$VERSION\` under dist-tag \`$DIST_TAG\`, from \`${{ github.sha }}\`." \
+            "" \
+            '```sh' \
+            "npm i $NAME@$DIST_TAG" \
+            '```')"
