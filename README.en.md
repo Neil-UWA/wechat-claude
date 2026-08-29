@@ -85,12 +85,54 @@ Send these from WeChat to control routing:
 | `/runs` | List running `/run` task sessions |
 | `/stop <name>` | Kill a `/run` task session (names start with `wc-`) |
 | `/close <number\|name\|pid>` | Close a Claude session remotely — terminates its Claude process (and MCP server) and removes it from the list. Unsaved work in that session is lost. If a name matches several sessions it lists them instead of guessing; `/close <name> all` closes all matches, `/close idle` cleans up every unmonitored session idle for 2+ hours. Every close reply ends with a remaining-session summary |
+| `/usage` | Check whether Claude's usage limit is what's blocking replies. Runs one tiny headless probe (Haiku by default — see below) |
 | `/help` | Show command help |
 | *(no prefix)* | Send to the most recently active **monitoring** session (falls back to most recently active overall) |
 
 Delivery feedback: if a message lands in a session that isn't monitoring its
 inbox, the daemon warns you immediately; if a delivered message is still
 unread after 2 minutes, it sends a reminder.
+
+### Usage limits (when every session goes quiet)
+
+When the Claude account hits its usage limit, **every** session goes silent at
+once: model calls are rejected, so nothing is read and nothing is answered —
+from WeChat that is indistinguishable from a dead daemon. So the daemon works
+it out itself:
+
+1. A delivered message with no reply for 90 seconds, **and** a target session
+   whose *own* transcript (`~/.claude/projects/….jsonl` — the MCP server records
+   the exact path, so a busy neighbour sharing the directory can't mask it)
+   hasn't been written for 60 seconds — i.e. it isn't busy, it is stuck —
+   triggers one headless probe (`claude -p ok`, with no MCP servers loaded).
+2. If the probe confirms a usage limit, the daemon says so on WeChat with the
+   expected reset time, and suppresses the misleading "that session may not be
+   monitoring" reminder. Messages you send meanwhile are still delivered, with
+   a note attached.
+3. When the limit lifts, the daemon sends a recovery message and gets the
+   unanswered work moving: messages still in an inbox only need their watcher
+   poked (the original announcement is long gone and never repeats); messages
+   Claude *read* but never got to answer are put back in the inbox first, since
+   there is nothing left to announce. Only deliveries with no reply are
+   replayed, so nothing is handled twice.
+
+Probes cost a little quota, so: only one runs at a time; at most one every 5
+minutes while things look healthy; once a limit is confirmed probes are free
+(the request is rejected outright), and a known reset time is waited out.
+
+Optional config (`~/.claude/wechat/config.json`):
+
+```json
+{ "probeModel": "claude-haiku-4-5-20251001", "claudeBin": "~/.local/bin/claude" }
+```
+
+- `probeModel` — model used for the probe. Haiku by default: cheap, and
+  subscription limits are account-wide, so it is rejected by the same limit.
+  Set `"default"` to probe with your own default model — needed if the limit you
+  care about is an Opus-only weekly cap.
+- `claudeBin` — path to the `claude` executable, only needed when launchd's
+  minimal PATH can't find it (`~/.local/bin`, `~/.claude/local`, Homebrew and
+  `/usr/local/bin` are tried).
 
 Incoming images are downloaded and decrypted automatically to
 `~/.claude/wechat/media/` (cleaned up after 7 days); the routed message text
@@ -151,6 +193,11 @@ Use `wechat_set_session_name` to set a custom name.
 ├── daemon.log            # daemon output
 ├── cursor.txt            # message polling cursor
 ├── expired.flag          # present when the WeChat login has expired
+├── usage-limit.json      # known Claude usage-limit state (incl. notified users)
+├── replies/              # last time each session replied to each WeChat user
+│   └── <pid>--<userId>
+├── nudge/                # signal to re-announce a backlog (after a limit lifts)
+│   └── <pid>
 ├── sessions/             # registered Claude Code sessions
 │   └── <pid>.json
 ├── inbox/                # per-session message queues
@@ -204,6 +251,9 @@ server's pid.
 4. **MCP Server** reads from its inbox when Claude calls `wechat_get_messages`
 5. Claude processes the message and replies via `wechat_send_text`
 6. The MCP server clears the typing indicator file; the daemon detects this and stops typing
+7. If a message goes unread *and* unanswered for too long, the daemon checks
+   whether Claude's usage limit is the cause and explains it on WeChat (see
+   [Usage limits](#usage-limits-when-every-session-goes-quiet))
 
 ## Language
 

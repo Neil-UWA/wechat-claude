@@ -9,7 +9,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { clearHeartbeat, touchHeartbeat } from "./monitoring.js";
-import { INBOX_DIR, SESSIONS_DIR } from "./paths.js";
+import { consumeNudge } from "./nudge.js";
+import { INBOX_DIR, NUDGE_DIR, SESSIONS_DIR } from "./paths.js";
 import type { SessionInfo } from "./sessions.js";
 
 function resolveSessionByCwd(): string | undefined {
@@ -64,6 +65,14 @@ function checkInbox(): void {
   process.stdout.write(`WECHAT: ${msgs.length} msg(s) - ${preview}\n`);
 }
 
+// Re-announce the pending inbox when the daemon nudges us (e.g. after a Claude
+// usage limit lifted and the original announcement went unanswered).
+function checkNudge(): void {
+  if (!consumeNudge(sessionId as string)) return;
+  lastSig = "";
+  checkInbox();
+}
+
 function cleanup(): void {
   clearHeartbeat(sessionId as string);
 }
@@ -81,6 +90,13 @@ try {
   fs.watch(INBOX_DIR, (_event, filename) => {
     if (filename === `${sessionId}.json`) checkInbox();
   });
+} catch {
+  // fall back to the interval below
+}
+
+try {
+  fs.mkdirSync(NUDGE_DIR, { recursive: true, mode: 0o700 });
+  fs.watch(NUDGE_DIR, () => checkNudge());
 } catch {
   // fall back to the interval below
 }
@@ -104,5 +120,6 @@ setInterval(() => {
     process.exit(0);
   }
   touchHeartbeat(sessionId);
+  checkNudge();
   checkInbox();
 }, 10_000);

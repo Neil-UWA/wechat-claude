@@ -11,6 +11,18 @@ import {
   setBinding,
 } from "./bindings.js";
 import { clearHeartbeat, isMonitoring } from "./monitoring.js";
+import { nudgeSession } from "./nudge.js";
+import { lastReplyAt, pruneReplies } from "./replies.js";
+import { looksStalled } from "./transcripts.js";
+import {
+  type LimitProbe,
+  type UsageState,
+  probeUsageLimit,
+  readUsageState,
+  resetHint,
+  shouldProbe,
+  writeUsageState,
+} from "./usage.js";
 import {
   CONFIG_FILE,
   CURSOR_FILE,
@@ -34,7 +46,7 @@ import {
   sessionLabel,
   sortedSessions,
 } from "./sessions.js";
-import { writeToInbox } from "./inbox.js";
+import { peekInbox, writeToInbox } from "./inbox.js";
 import { CLAUDE_CONFIG_FILE, ensureBypassAccepted } from "./claude-config.js";
 import { type Lang, formatAgo, getLang, marker, t } from "./i18n.js";
 import {
@@ -61,6 +73,12 @@ const MEDIA_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const UNREAD_WARN_AFTER_MS = 120_000;
 const DELIVERY_EXPIRE_MS = 600_000;
 const IDLE_MS = 2 * 60 * 60 * 1000;
+// A delivery with no answer for this long is a candidate for a usage-limit
+// check — but only if the session also looks stalled (see sessionStalled).
+const SILENT_PROBE_AFTER_MS = 90_000;
+// A session that is genuinely working writes to its transcript constantly; one
+// whose model calls are being rejected writes nothing at all.
+const TRANSCRIPT_IDLE_MS = 60_000;
 
 function cleanOldMedia(): void {
   try {
@@ -186,31 +204,57 @@ function isTypingActive(userId: string): boolean {
 const extractText = sharedExtractText;
 
 type Delivery = {
-  msgId: string;
+  // The message as it was written to the inbox, so it can be put back if the
+  // session consumed it but never got to answer.
+  msg: PendingMessage;
   sessionId: string;
   targetName: string;
-  fromUserId: string;
   deliveredAt: number;
   warned: boolean;
+  probed: boolean;
 };
 
 const deliveries: Delivery[] = [];
 
 function trackDelivery(
-  msgId: string,
+  msg: PendingMessage,
   sessionId: string,
-  targetName: string,
-  fromUserId: string
+  targetName: string
 ): void {
   deliveries.push({
-    msgId,
+    msg,
     sessionId,
     targetName,
-    fromUserId,
     deliveredAt: Date.now(),
     warned: false,
+    probed: false,
   });
   if (deliveries.length > 200) deliveries.shift();
+}
+
+function inboxHas(sessionId: string, msgId: string): boolean {
+  try {
+    const inbox = JSON.parse(
+      fs.readFileSync(path.join(INBOX_DIR, `${sessionId}.json`), "utf-8")
+    ) as PendingMessage[];
+    return inbox.some((m) => m.id === msgId);
+  } catch {
+    return false;
+  }
+}
+
+// Has the session gone quiet, or is it just busy? Claude Code appends to its
+// transcript on every step, so a still-working session is never "stalled" —
+// which keeps long tasks from triggering (and paying for) usage probes.
+function sessionStalled(sessionId: string): boolean {
+  const session = listSessions().find((s) => s.id === sessionId);
+  if (!session) return false;
+  return looksStalled(session, TRANSCRIPT_IDLE_MS);
+}
+
+// Deliveries this user is still waiting on an answer for.
+function pendingFor(userId: string): Delivery[] {
+  return deliveries.filter((d) => d.msg.fromUserId === userId);
 }
 
 function startDeliveryWatcher(client: ILinkClient): void {
@@ -218,25 +262,208 @@ function startDeliveryWatcher(client: ILinkClient): void {
     const now = Date.now();
     for (let i = deliveries.length - 1; i >= 0; i--) {
       const d = deliveries[i];
-      let stillPending = false;
-      try {
-        const inbox = JSON.parse(
-          fs.readFileSync(path.join(INBOX_DIR, `${d.sessionId}.json`), "utf-8")
-        ) as PendingMessage[];
-        stillPending = inbox.some((m) => m.id === d.msgId);
-      } catch {}
-      if (!stillPending || now - d.deliveredAt > DELIVERY_EXPIRE_MS) {
+      // That session answered this user after the delivery — done watching.
+      if (lastReplyAt(d.sessionId, d.msg.fromUserId) > d.deliveredAt) {
         deliveries.splice(i, 1);
         continue;
       }
-      if (!d.warned && now - d.deliveredAt > UNREAD_WARN_AFTER_MS) {
+      if (now - d.deliveredAt > DELIVERY_EXPIRE_MS) {
+        deliveries.splice(i, 1);
+        continue;
+      }
+      const stillPending = inboxHas(d.sessionId, d.msg.id);
+
+      // Silence can mean "unread" (never picked up) or "read but no reply"
+      // (the model call was rejected mid-turn). Both look like a usage limit,
+      // so check it before blaming the session.
+      if (
+        !d.probed &&
+        now - d.deliveredAt > SILENT_PROBE_AFTER_MS &&
+        sessionStalled(d.sessionId)
+      ) {
+        d.probed = true;
+        void checkUsage(client);
+      }
+
+      if (!d.warned && stillPending && now - d.deliveredAt > UNREAD_WARN_AFTER_MS) {
         d.warned = true;
+        // A confirmed usage limit already explains the silence, and does it
+        // better than "that session may not be monitoring".
+        if (isLimitedNow()) continue;
         client
-          .sendText(d.fromUserId, t().unreadWarn(d.targetName))
+          .sendText(d.msg.fromUserId, t().unreadWarn(d.targetName))
           .catch((err) => log(`Unread warning failed: ${err}`));
       }
     }
   }, 20_000);
+}
+
+// ---------------------------------------------------------------------------
+// Claude usage limit
+//
+// When the account's limit is reached every session stops answering at once,
+// which from WeChat is indistinguishable from a dead daemon. The daemon probes
+// for it, says so, and follows up when the limit lifts.
+// ---------------------------------------------------------------------------
+
+let usageState: UsageState = readUsageState();
+
+function saveUsageState(): void {
+  writeUsageState(usageState);
+}
+
+// Limited, as far as we know right now. Once the reported reset time has
+// passed the state is stale — the watcher re-probes rather than keep claiming
+// a limit that may already be over.
+function isLimitedNow(now: number = Date.now()): boolean {
+  if (!usageState.limited) return false;
+  return usageState.resetAt === undefined || now < usageState.resetAt;
+}
+
+function hintFor(now: number = Date.now()): string {
+  return resetHint(usageState, now) ?? t().usageResetUnknown;
+}
+
+function waitingSummary(userId: string): string {
+  const pending = pendingFor(userId);
+  if (pending.length === 0) return "";
+  const body = pending
+    .map((d) => `• ${d.targetName}: ${d.msg.text.replace(/\s+/g, " ").slice(0, 40)}`)
+    .join("\n");
+  return t().usageWaitingList(body);
+}
+
+function notifyLimited(client: ILinkClient, userId: string): void {
+  if (usageState.notified.includes(userId)) return;
+  usageState.notified.push(userId);
+  saveUsageState();
+  client
+    .sendText(userId, t().usageLimited(hintFor(), waitingSummary(userId)))
+    .catch((err) => log(`Usage-limit notice failed: ${err}`));
+}
+
+// Tell everyone who is currently waiting on a session, not just the user whose
+// message triggered the probe.
+function announceLimited(client: ILinkClient): void {
+  for (const userId of new Set(deliveries.map((d) => d.msg.fromUserId))) {
+    notifyLimited(client, userId);
+  }
+}
+
+// Get unanswered work moving again after a limit lifts.
+//
+// Two shapes to repair. A message still in the inbox only needs its watcher
+// poked: the announcement it made while Claude could not react never repeats on
+// its own. A message Claude *read* and then failed to answer is worse — the
+// inbox was already drained, so there is nothing left to announce and nothing
+// to poke; it has to go back in the inbox first. Only deliveries with no reply
+// are requeued, so nothing is handled twice.
+//
+// Deliveries are in-memory, so a daemon restart during a limit loses the
+// read-but-unanswered ones; the still-in-inbox case survives on disk.
+function resumePendingDeliveries(): { nudged: number; requeued: number } {
+  const live = new Set(listSessions().map((s) => s.id));
+  let requeued = 0;
+  for (const d of deliveries) {
+    if (!live.has(d.sessionId)) continue;
+    if (inboxHas(d.sessionId, d.msg.id)) continue;
+    writeToInbox(d.sessionId, d.msg);
+    requeued += 1;
+  }
+  let nudged = 0;
+  for (const session of listSessions()) {
+    if (peekInbox(session.id) === 0) continue;
+    nudgeSession(session.id);
+    nudged += 1;
+  }
+  return { nudged, requeued };
+}
+
+function applyProbe(client: ILinkClient, probe: LimitProbe): void {
+  const now = Date.now();
+
+  if (probe.state === "limited") {
+    if (!usageState.limited) {
+      log(`Claude usage limit detected: ${probe.detail}`);
+      usageState = {
+        limited: true,
+        since: now,
+        resetAt: probe.resetAt,
+        resetText: probe.resetText,
+        lastProbeAt: now,
+        notified: [],
+      };
+      notifyMacOS(t().usageMacNotice(hintFor(now)));
+    } else {
+      usageState.lastProbeAt = now;
+      usageState.resetAt = probe.resetAt ?? usageState.resetAt;
+      usageState.resetText = probe.resetText ?? usageState.resetText;
+    }
+    saveUsageState();
+    announceLimited(client);
+    return;
+  }
+
+  if (probe.state === "unknown") {
+    // Some other failure (CLI missing, network, timeout). Don't invent a limit
+    // — just record the attempt so probes stay throttled.
+    log(`Usage probe inconclusive: ${probe.detail}`);
+    usageState.lastProbeAt = now;
+    saveUsageState();
+    return;
+  }
+
+  if (!usageState.limited) {
+    usageState.lastProbeAt = now;
+    saveUsageState();
+    return;
+  }
+
+  const mins = Math.round((now - (usageState.since ?? now)) / 60_000);
+  const audience = new Set([
+    ...usageState.notified,
+    ...deliveries.map((d) => d.msg.fromUserId),
+  ]);
+  usageState = { limited: false, lastProbeAt: now, notified: [] };
+  saveUsageState();
+  const { nudged, requeued } = resumePendingDeliveries();
+  log(
+    `Claude usage limit lifted after ${mins}m; requeued ${requeued} message(s), nudged ${nudged} session(s)`
+  );
+  const tail = nudged > 0 ? t().usagePendingNudged(nudged) : t().usagePendingNone;
+  for (const userId of audience) {
+    client
+      .sendText(userId, t().usageRecovered(mins, tail))
+      .catch((err) => log(`Usage-recovery notice failed: ${err}`));
+  }
+}
+
+// One probe at a time, throttled unless forced (the /usage command).
+let probeInFlight: Promise<LimitProbe> | undefined;
+
+async function checkUsage(
+  client: ILinkClient,
+  force = false
+): Promise<LimitProbe | undefined> {
+  if (probeInFlight) return probeInFlight;
+  if (!force && !shouldProbe(usageState, Date.now())) return undefined;
+  probeInFlight = probeUsageLimit();
+  try {
+    const probe = await probeInFlight;
+    applyProbe(client, probe);
+    return probe;
+  } finally {
+    probeInFlight = undefined;
+  }
+}
+
+// While limited, keep checking so recovery is announced without the user
+// having to poke it — rejected probes are instant and cost nothing.
+function startUsageWatcher(client: ILinkClient): void {
+  setInterval(() => {
+    if (!usageState.limited) return;
+    void checkUsage(client);
+  }, 30_000);
 }
 
 function notifyMacOS(message: string): void {
@@ -509,6 +736,17 @@ function handleRunCommand(
   );
 }
 
+// A message delivered during a known limit episode would otherwise vanish into
+// silence, so say so immediately instead of waiting for the watchdog.
+function noteUsageLimit(client: ILinkClient, userId: string): void {
+  if (!isLimitedNow()) return;
+  if (!usageState.notified.includes(userId)) usageState.notified.push(userId);
+  saveUsageState();
+  client
+    .sendText(userId, t().usageNoteOnSend(hintFor()))
+    .catch((err) => log(`Usage-limit note failed: ${err}`));
+}
+
 function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   const text = msg.text.trim();
   const lang = getLang();
@@ -519,6 +757,28 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
       log(`Reply failed: ${err}`);
     });
   };
+
+  if (text === "/usage" || text === "/limit" || text === "/用量") {
+    sendReply(m.usageChecking);
+    void (async () => {
+      const probe = await checkUsage(client, true);
+      if (!probe) return;
+      if (probe.state === "limited") {
+        const now = Date.now();
+        const mins = Math.round((now - (usageState.since ?? now)) / 60_000);
+        // Answering here counts as telling this user about the episode, so the
+        // watcher does not send them the same news a second time.
+        if (!usageState.notified.includes(msg.fromUserId)) {
+          usageState.notified.push(msg.fromUserId);
+          saveUsageState();
+        }
+        sendReply(m.usageStatusLimited(hintFor(now), mins));
+        return;
+      }
+      sendReply(probe.state === "ok" ? m.usageOk : m.usageUnknown(probe.detail));
+    })();
+    return;
+  }
 
   const runMatch = text.match(/^\/run(?:\s+([\s\S]*))?$/);
   if (runMatch) {
@@ -747,11 +1007,13 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
       sendReply(m.notFound(selector));
       return;
     }
-    writeToInbox(target.id, { ...msg, text: message });
-    trackDelivery(msg.id, target.id, target.name, msg.fromUserId);
+    const routed: PendingMessage = { ...msg, text: message };
+    writeToInbox(target.id, routed);
+    trackDelivery(routed, target.id, target.name);
     if (!isMonitoring(target.id)) {
       sendReply(m.deliveredUnmonitored(target.name));
     }
+    noteUsageLimit(client, msg.fromUserId);
     markTyping(msg.fromUserId);
     client.startTypingKeepAlive(msg.fromUserId, () => isTypingActive(msg.fromUserId));
     log(`Routed to ${target.name} (${target.id})`);
@@ -775,10 +1037,11 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     return;
   }
   writeToInbox(target.id, msg);
-  trackDelivery(msg.id, target.id, target.name, msg.fromUserId);
+  trackDelivery(msg, target.id, target.name);
   if (!isMonitoring(target.id)) {
     sendReply(m.deliveredNoneMonitored(target.name));
   }
+  noteUsageLimit(client, msg.fromUserId);
   markTyping(msg.fromUserId);
   client.startTypingKeepAlive(msg.fromUserId);
   log(`Routed to ${target.name} (${target.id})`);
@@ -842,6 +1105,9 @@ async function main(): Promise<void> {
   startTypingWatcher(client);
   startDeliveryWatcher(client);
   startRunWatcher(client);
+  startUsageWatcher(client);
+  pruneReplies(listSessions().map((s) => s.id));
+  setInterval(() => pruneReplies(listSessions().map((s) => s.id)), 30 * 60_000);
 
   log(`Daemon started (pid ${process.pid}). Polling WeChat...`);
 
