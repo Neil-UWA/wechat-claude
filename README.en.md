@@ -76,7 +76,7 @@ Send these from WeChat to control routing:
 
 | Command | Description |
 |---------|-------------|
-| `/sessions` or `/ls` | List active Claude Code sessions (`[监控中]` = actively monitoring). Ends with the running wechat-claude version and, when npm has a newer `latest`, an upgrade notice (npm is asked at most every 6 hours; the last answer is reused if it can't be reached) |
+| `/sessions` or `/ls` | List active Claude Code sessions (`[监控中]` = actively monitoring). Each entry shows the directory Claude is currently in (a worktree as `repo/worktree`) and its Claude Code cross-session name (`Claude: fintary-69`), which is how same-named sessions are told apart. Ends with the running wechat-claude version and, when npm has a newer `latest`, an upgrade notice (npm is asked at most every 6 hours; the last answer is reused if it can't be reached) |
 | `/s <number> <message>` | Send message to session by its number. Numbers are stable for a session's lifetime — they never shift when other sessions open or close (retired numbers aren't reused; numbering resets once all sessions are gone) |
 | `/use <number\|name\|pid>` | Bind your chat to one session: every plain message goes straight to it (survives daemon restarts). `/use off` unbinds; `/use` shows the current binding. Closing the bound session clears the binding automatically |
 | `/s <name> <message>` | Send message to session by name (fuzzy match; if ambiguous, prefers the monitored / most recently active one) |

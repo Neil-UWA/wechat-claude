@@ -43,6 +43,7 @@ import {
   getDefaultTarget,
   listSessions,
   matchSessions,
+  cwdLabel,
   sessionLabel,
   sortedSessions,
 } from "./sessions.js";
@@ -50,6 +51,7 @@ import { peekInbox, writeToInbox } from "./inbox.js";
 import { CLAUDE_CONFIG_FILE, ensureBypassAccepted } from "./claude-config.js";
 import { type Lang, formatAgo, getLang, marker, t } from "./i18n.js";
 import { checkForUpdate } from "./version.js";
+import { claudeRecordsForSessions } from "./claude-sessions.js";
 import {
   hasTmux,
   isSafeSessionName,
@@ -958,6 +960,10 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
       s.id !== receiverId &&
       now - s.lastActive >= IDLE_MS;
     const entries = sessions.map((s) => ({ s, num: numbers[s.id] }));
+    // Claude Code's own view of each session: its cross-session name, and the
+    // directory it is really in now (a worktree it entered after the MCP
+    // server started). Same-named sessions are indistinguishable without it.
+    const claude = claudeRecordsForSessions(sessions);
     const mainLines = entries
       .filter(({ s }) => !isIdle(s))
       .map(({ s, num }) => {
@@ -965,13 +971,15 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
         const tags =
           (isMonitoring(s.id) ? m.monitoringTag : "") +
           (s.id === receiverId ? (bound ? m.boundTag : m.defaultTag) : "");
+        const rec = claude.get(s.id);
         return m.sessionEntry(
           active,
           num,
           sessionLabel(s, sessions),
           tags,
-          path.basename(s.cwd),
-          formatAgo(now - s.lastActive, lang)
+          cwdLabel(rec?.cwd ?? s.cwd),
+          formatAgo(now - s.lastActive, lang),
+          rec?.name ?? s.claudeName
         );
       });
     const idleLines = entries

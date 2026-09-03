@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   claudeNameForMcpPid,
+  claudeRecordsForSessions,
   ownClaudeSessionName,
   parentPids,
   readClaudeSession,
@@ -70,6 +71,27 @@ describe("parentPids", () => {
   it("returns an empty map for no or invalid pids", () => {
     expect(parentPids([]).size).toBe(0);
     expect(parentPids([-1, 0, 1.5, 999_999_999]).size).toBe(0);
+  });
+});
+
+describe("claudeRecordsForSessions", () => {
+  it("maps each WeChat session to its Claude record through the parent pid", () => {
+    record(400, { pid: 400, name: "repo-11", cwd: "/repo/.claude/worktrees/feat" });
+    record(401, { pid: 401, name: "repo-22", cwd: "/repo" });
+    const sessions = [
+      { id: "s1", pid: 4000 },
+      { id: "s2", pid: 4001 },
+      { id: "s3", pid: 4002 }, // parent unknown
+    ];
+    const parents = new Map([
+      [4000, 400],
+      [4001, 401],
+    ]);
+    const out = claudeRecordsForSessions(sessions, dir, parents);
+    expect(out.get("s1")?.name).toBe("repo-11");
+    expect(out.get("s1")?.cwd).toBe("/repo/.claude/worktrees/feat");
+    expect(out.get("s2")?.name).toBe("repo-22");
+    expect(out.has("s3")).toBe(false);
   });
 });
 

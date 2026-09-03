@@ -25,6 +25,7 @@ vi.mock("node:os", async () => {
 });
 
 const {
+  cwdLabel,
   listSessions,
   sortedSessions,
   findSession,
@@ -222,6 +223,15 @@ describe("matchSessions", () => {
     fake("x", "twin", ALIVE);
     fake("y", "twin", ALIVE2);
     expect(matchSessions(String(ALIVE)).length).toBe(1);
+  });
+});
+
+describe("cwdLabel", () => {
+  it("shows repo/worktree for a Claude worktree and the basename otherwise", () => {
+    expect(cwdLabel("/Users/x/repos/fintary/.claude/worktrees/data-sync")).toBe(
+      "fintary/data-sync"
+    );
+    expect(cwdLabel("/Users/x/repos/fintary")).toBe("fintary");
   });
 });
 

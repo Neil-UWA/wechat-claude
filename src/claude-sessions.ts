@@ -106,6 +106,26 @@ export function parentPids(pids: number[]): Map<number, number> {
   return out;
 }
 
+// Claude Code's record for each WeChat session, keyed by WeChat session id,
+// resolved through the MCP server's parent pid in one `ps` call. Besides the
+// cross-session name this carries Claude's *current* working directory — the
+// WeChat session file only knows where the MCP server started, which stops
+// being true the moment Claude moves into a worktree.
+export function claudeRecordsForSessions(
+  sessions: { id: string; pid: number }[],
+  sessionsDir: string = CLAUDE_SESSIONS_DIR,
+  parents: Map<number, number> = parentPids(sessions.map((s) => s.pid))
+): Map<string, ClaudeSessionRecord> {
+  const out = new Map<string, ClaudeSessionRecord>();
+  for (const s of sessions) {
+    const claudePid = parents.get(s.pid);
+    if (claudePid === undefined) continue;
+    const rec = readClaudeSession(claudePid, sessionsDir);
+    if (rec) out.set(s.id, rec);
+  }
+  return out;
+}
+
 // Claude Code name of the session whose MCP server has pid `mcpPid`, for
 // sessions that did not record it themselves (registered by an older build).
 export function claudeNameForMcpPid(

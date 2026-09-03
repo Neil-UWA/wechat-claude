@@ -126,13 +126,16 @@ type Msgs = {
   unreadWarn: (name: string) => string;
   // /sessions listing
   sessionsHeader: (count: number) => string;
+  // claude: the Claude Code cross-session name (ListAgents/SendMessage), when
+  // known — the one thing that tells two same-named sessions apart.
   sessionEntry: (
     dot: string,
     n: number,
     label: string,
     tags: string,
     dir: string,
-    ago: string
+    ago: string,
+    claude: string | undefined
   ) => string;
   idleSection: (body: string) => string;
   idleEntry: (n: number, label: string, ago: string) => string;
@@ -265,8 +268,8 @@ const zh: Msgs = {
   unreadWarn: (name) =>
     `提醒: 发给 "${name}" 的消息已 2 分钟未被读取。该 session 可能没有在监控消息。\n发送 /sessions 查看状态，或用 /s <编号> <消息> 换一个 session。`,
   sessionsHeader: (count) => `活跃 sessions (${count}):`,
-  sessionEntry: (dot, n, label, tags, dir, ago) =>
-    `${dot} ${n}. ${label}${tags}\n   目录: ${dir} · ${ago}活跃`,
+  sessionEntry: (dot, n, label, tags, dir, ago, claude) =>
+    `${dot} ${n}. ${label}${tags}\n   目录: ${dir}${claude ? ` · Claude: ${claude}` : ""} · ${ago}活跃`,
   idleSection: (body) =>
     `闲置（未监控、2 小时以上未活跃）:\n${body}\n可发 /close idle 一键清理`,
   idleEntry: (n, label, ago) => `○ ${n}. ${label} · ${ago}`,
@@ -405,8 +408,8 @@ const en: Msgs = {
   unreadWarn: (name) =>
     `Heads up: your message to "${name}" has been unread for 2 minutes. That session may not be monitoring.\nSend /sessions to check, or /s <number> <message> to pick another.`,
   sessionsHeader: (count) => `Active sessions (${count}):`,
-  sessionEntry: (dot, n, label, tags, dir, ago) =>
-    `${dot} ${n}. ${label}${tags}\n   dir: ${dir} · active ${ago}`,
+  sessionEntry: (dot, n, label, tags, dir, ago, claude) =>
+    `${dot} ${n}. ${label}${tags}\n   dir: ${dir}${claude ? ` · Claude: ${claude}` : ""} · active ${ago}`,
   idleSection: (body) =>
     `Idle (unmonitored, 2h+ inactive):\n${body}\nSend /close idle to clean up`,
   idleEntry: (n, label, ago) => `○ ${n}. ${label} · ${ago}`,

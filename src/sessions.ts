@@ -117,6 +117,19 @@ export function detectSessionName(cwd: string): string {
   return repoName || "session";
 }
 
+// Short display form of a working directory: "repo/worktree" for a Claude
+// worktree, else the directory's basename.
+export function cwdLabel(cwd: string): string {
+  const worktreeMatch = cwd.match(/\.claude[/\\]worktrees[/\\]([^/\\]+)/);
+  if (worktreeMatch) {
+    const repoPath = cwd
+      .split(/\.claude[/\\]worktrees[/\\]/)[0]
+      .replace(/[/\\]$/, "");
+    return `${path.basename(repoPath)}/${worktreeMatch[1]}`;
+  }
+  return path.basename(cwd) || cwd;
+}
+
 export function writeSessionFile(info: SessionInfo): void {
   fs.writeFileSync(
     path.join(SESSIONS_DIR, `${info.id}.json`),
