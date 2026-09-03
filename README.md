@@ -52,7 +52,7 @@ wechat-claude daemon           # 前台运行 / 交给你自己的进程管理�
 
 最后，在任意 Claude Code session 里输入 `/wechat`。这会启动一个常驻 watcher
 （`dist/watch-inbox.js`），它通过 `fs.watch` 即时响应消息，并把该 session 标记为
-`[监控中]`。daemon 在 `/wechat` 时和登录成功后也会自动拉起（它是单例，由 pid 文件守护）。
+`👀 监控中`。daemon 在 `/wechat` 时和登录成功后也会自动拉起（它是单例，由 pid 文件守护）。
 
 `wechat-claude daemon install` 会用打包好的模板为*你这台机器*生成 launchd plist，写到
 `~/Library/LaunchAgents/com.wechat-claude.daemon.plist`，不需要手工编辑。切换 Node 版本
@@ -69,7 +69,7 @@ wechat-claude daemon           # 前台运行 / 交给你自己的进程管理�
 
 | 命令 | 说明 |
 |------|------|
-| `/sessions` 或 `/ls` | 列出活跃的 Claude Code session（`[监控中]` = 正在实时监控）。每条带 Claude 当前所在目录（worktree 显示为 `仓库/worktree名`）和 Claude Code 跨会话名（`Claude: fintary-69`），同名 session 靠这两项区分。末尾显示当前 wechat-claude 版本；如果 npm 上有更新的 `latest`，会附带升级提示（最多每 6 小时查一次 npm，查不到就沿用上次结果） |
+| `/sessions` 或 `/ls` | 列出活跃的 Claude Code session（`👀` = 监控中，正在实时读取消息；`📌 已绑定` = 你的消息都发到这里；`📥 默认接收` = 不带前缀的消息发到这里）。每条带 Claude 当前所在目录（worktree 显示为 `仓库/worktree名`）和 Claude Code 跨会话名（`Claude: fintary-69`），同名 session 靠这两项区分。末尾显示当前 wechat-claude 版本；如果 npm 上有更新的 `latest`，会附带升级提示（最多每 6 小时查一次 npm，查不到就沿用上次结果） |
 | `/s <编号> <消息>` | 按编号发消息给某个 session。编号在 session 生命周期内固定不变 —— 其他 session 开启或关闭都不会让它移位（退役的编号不会被复用；所有 session 都消失后编号重新计数） |
 | `/use <编号\|名字\|pid>` | 把你的聊天绑定到某个 session：之后每条不带前缀的消息都直接发给它（daemon 重启后依然有效）。`/use off` 解绑；`/use` 查看当前绑定。被绑定的 session 关闭时会自动解绑 |
 | `/s <名字> <消息>` | 按名字发消息（模糊匹配；有歧义时优先选正在监控的 / 最近活跃的） |
@@ -193,7 +193,7 @@ session 用 `SendMessage` 找它时要用的（见 `ListAgents`）。`wechat_sta
 │   └── <pid>.json
 ├── inbox/                # 各 session 的消息队列
 │   └── <pid>.json
-├── heartbeat/            # watcher 心跳（session 处于 [监控中]）
+├── heartbeat/            # watcher 心跳（session 处于 👀 监控中）
 │   └── <pid>
 └── typing/               # 输入状态
     └── <userId>
@@ -234,7 +234,7 @@ wechat-claude daemon restart
 2. 收到的消息被解析并路由：
    - `/sessions`、`/run`、`/close`、`/use` 这类命令由 daemon 自己处理
    - `/s <目标> <消息>` 路由到指定 session 的 inbox
-   - 不带前缀的消息发给你绑定的 session（`/use`），否则发给最近活跃且处于 `[监控中]`
+   - 不带前缀的消息发给你绑定的 session（`/use`），否则发给最近活跃且处于 `👀 监控中`
      的那个
 3. 消息被路由时，daemon 会在微信上打开"正在输入"指示
 4. **MCP Server** 在 Claude 调用 `wechat_get_messages` 时读取自己的 inbox
@@ -288,7 +288,7 @@ wechat-claude 会响应聊天消息、在你的机器上执行代码。完整威
   `~/.claude/wechat/config.json` 的 `repoDirs` 里，或者传绝对路径，或者用
   `/run . <任务>` 在默认目录里跑。
 - **消息发出去没反应。** 检查 `wechat-claude daemon status` 和
-  `wechat-claude daemon log`。如果目标 session 不在 `[监控中]`，在它里面跑 `/wechat`，
+  `wechat-claude daemon log`。如果目标 session 不在 `👀 监控中`，在它里面跑 `/wechat`，
   或者用 `/use <编号>` 绑定。
 - **Linux/Windows 上 `daemon install` 什么都没做。** launchd 是 macOS 专有的；请用你自己
   的进程管理器托管 daemon（`wechat-claude daemon`、systemd、pm2……）。

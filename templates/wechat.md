@@ -16,7 +16,7 @@ Start WeChat message monitoring for this session. Optional argument: a WeChat ro
    rather than composing it; the install path differs per machine. It looks
    like `node /path/to/wechat-claude-sessions/dist/watch-inbox.js <session id>`.
 
-   Use `persistent: true`. The watcher is event-driven (`fs.watch` on the inbox), prints one line per new delivery, and maintains the heartbeat file that marks this session as `[monitoring]` — the daemon prefers monitored sessions when routing messages without a `/s` prefix.
+   Use `persistent: true`. The watcher is event-driven (`fs.watch` on the inbox), prints one line per new delivery, and maintains the heartbeat file that marks this session as `👀 monitoring` — the daemon prefers monitored sessions when routing messages without a `/s` prefix.
 7. When the Monitor emits an event:
    - Call `wechat_get_messages` to read and clear the inbox
    - Process the message content (answer questions, execute tasks, etc.)
@@ -26,4 +26,4 @@ Start WeChat message monitoring for this session. Optional argument: a WeChat ro
 
 Two namespaces, do not mix them up: the names in `wechat_status`'s `Active sessions` list are **WeChat routing names** (for `/s <name> <msg>` in WeChat and for `wechat_set_session_name`). They are not Claude Code session names. To message another Claude session with `SendMessage`, use the name shown after `SendMessage:` on that row, or `ListAgents`.
 
-Fallback: if the Monitor tool is unavailable, use ScheduleWakeup with a 60-second interval and call `wechat_get_messages` on each wakeup (note: without the watcher heartbeat, this session will not show as `[monitoring]`, but messages explicitly routed here with `/s` still arrive).
+Fallback: if the Monitor tool is unavailable, use ScheduleWakeup with a 60-second interval and call `wechat_get_messages` on each wakeup (note: without the watcher heartbeat, this session will not show as `👀 monitoring`, but messages explicitly routed here with `/s` still arrive).
