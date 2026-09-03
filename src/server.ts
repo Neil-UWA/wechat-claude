@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import {
+  claudeNameForMcpPid,
+  ownClaudeSessionName,
+  parentPids,
+} from "./claude-sessions.js";
 import { ILinkClient } from "./ilink.js";
 import { PKG_ROOT } from "./pkg-root.js";
 import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js";
@@ -26,7 +31,9 @@ import {
 import {
   type SessionInfo,
   detectSessionName as detectSessionNameFor,
+  findNameConflict,
   listSessions,
+  validateSessionName,
   writeSessionFile,
 } from "./sessions.js";
 
@@ -101,6 +108,14 @@ const sessionId = String(process.pid);
 const sessionName = { value: detectSessionName() };
 const client = new ILinkClient();
 
+// A session's Claude Code name for display: what it recorded itself, else
+// looked up through its MCP server's parent process (sessions from an older
+// build recorded nothing). Never guessed: a wrong name here is worse than
+// "unknown", because an agent will act on it.
+function claudeNameLabel(s: SessionInfo, parents: Map<number, number>): string {
+  return s.claudeName ?? claudeNameForMcpPid(s.pid, parents) ?? "unknown";
+}
+
 function currentSessionInfo(): SessionInfo {
   // Claude Code passes its own session id to MCP servers; it is the transcript
   // file's name, which is how the daemon can watch this exact session for
@@ -115,6 +130,8 @@ function currentSessionInfo(): SessionInfo {
     transcript: claudeSessionId
       ? transcriptPath(process.cwd(), claudeSessionId)
       : undefined,
+    // Re-read each time: Claude Code can rename its session after we start.
+    claudeName: ownClaudeSessionName(process.ppid, process.env.CLAUDE_CODE_SESSION_ID),
   };
 }
 
@@ -376,14 +393,59 @@ server.tool(
 
 server.tool(
   "wechat_set_session_name",
-  "Set a name for this session for WeChat routing ('/s <name> <msg>').",
-  { name: z.string().describe("Session name (e.g. 'backend', 'review')") },
-  async ({ name }) => {
+  "Set this session's WeChat routing name (used in '/s <name> <msg>' from WeChat). This is NOT the Claude Code session name that SendMessage/ListAgents use; wechat_status shows both. Rejects whitespace, purely numeric names, and names another live session already holds. Setting the current name again is a no-op.",
+  {
+    name: z
+      .string()
+      .describe(
+        "Routing name, one word without spaces (e.g. 'backend', 'review', 'integration')"
+      ),
+  },
+  async ({ name: raw }) => {
+    const checked = validateSessionName(raw);
+    if (!checked.ok) {
+      const hint = checked.suggestion
+        ? ` Try "${checked.suggestion}" instead.`
+        : "";
+      return {
+        content: [{ type: "text", text: `${checked.reason}${hint}` }],
+        isError: true,
+      };
+    }
+    const name = checked.name;
+    if (name === sessionName.value) {
+      touchActive();
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Session name is already "${name}" — nothing changed. Route: /s ${name} <msg>`,
+          },
+        ],
+      };
+    }
+    const holder = findNameConflict(name, sessionId);
+    if (holder) {
+      const theirs = `, Claude Code name: ${claudeNameLabel(holder, parentPids([holder.pid]))}`;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Name "${name}" is already used by another live session (pid: ${holder.pid}${theirs}, cwd: ${holder.cwd}). Session name unchanged ("${sessionName.value}"). Pick a different name, or close that session first (/close ${holder.pid} in WeChat).`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    const previous = sessionName.value;
     sessionName.value = name;
     register();
     return {
       content: [
-        { type: "text", text: `Session name: "${name}". Route: /s ${name} <msg>` },
+        {
+          type: "text",
+          text: `Session name: "${name}" (was "${previous}"). Route from WeChat: /s ${name} <msg>`,
+        },
       ],
     };
   }
@@ -395,13 +457,22 @@ server.tool(
   {},
   async () => {
     const daemon = await ensureDaemonRunning();
+    // Running /wechat is the user turning their attention to this session, so
+    // it should become the default target for plain messages once its watcher
+    // is up (the default is the most recently active monitored session).
+    touchActive();
     const sessions = listSessions();
     const inboxCount = peekInbox();
     const monitoring = isMonitoring(sessionId);
+    const ownClaudeName = ownClaudeSessionName(process.ppid, process.env.CLAUDE_CODE_SESSION_ID);
+    const parents = parentPids(
+      sessions.filter((s) => !s.claudeName).map((s) => s.pid)
+    );
     const lines = [
       `Logged in: ${client.isLoggedIn}`,
       `Daemon running: ${daemon.running}${daemon.autoStarted ? " (auto-started just now)" : ""}`,
-      `Session: ${sessionName.value} (id: ${sessionId})`,
+      `Session: ${sessionName.value} (id: ${sessionId})  ·  WeChat routing name, use in "/s ${sessionName.value} <msg>"`,
+      `Claude Code session name: ${ownClaudeName ?? "unknown"}  ·  what other Claude sessions pass to SendMessage; see ListAgents`,
       `Inbox: ${inboxCount} message(s)`,
       `Watcher: ${monitoring ? "active — this session is monitoring messages" : "NOT active — messages routed here will sit unread"}`,
       ...routingLines(sessionId),
@@ -409,8 +480,11 @@ server.tool(
       ...sessions.map((s) => {
         const active = Date.now() - s.lastActive < 120_000 ? "●" : "○";
         const mon = isMonitoring(s.id) ? " [monitoring]" : "";
-        return `  ${active} ${s.name} (pid: ${s.pid})${mon}`;
+        const self = s.id === sessionId ? " (this session)" : "";
+        const claude = `  ·  SendMessage: ${claudeNameLabel(s, parents)}`;
+        return `  ${active} ${s.name} (pid: ${s.pid})${mon}${self}${claude}`;
       }),
+      `  (Names before "(pid" are WeChat routing names for "/s <name> <msg>" — they are NOT Claude Code session names. To message a session with SendMessage, use the name after "SendMessage:", or ListAgents. Either name works as the /s selector.)`,
     ];
     // The daemon records this; a session that was rate-limited comes back with
     // no idea why it went quiet, and the user is owed an explanation.

@@ -83,6 +83,18 @@ describe("routingLines", () => {
     expect(text).toContain("999999");
   });
 
+  it("says plainly when the default target is a different session", () => {
+    writeSession("100", "here", Date.now() - 60_000);
+    writeSession("200", "other", Date.now());
+    markMonitoring("100");
+    markMonitoring("200");
+    const text = routingLines("100").join("\n");
+    expect(text).toContain("Default target for unbound plain messages: other");
+    expect(text).toContain("NOT this session");
+    expect(text).toContain("/use <n>");
+    expect(text).not.toContain("(this session)");
+  });
+
   it("prefers a monitored session over a more recently active unmonitored one", () => {
     writeSession("100", "here", Date.now());
     writeSession("200", "other", Date.now() + 60_000);

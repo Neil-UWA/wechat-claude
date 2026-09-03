@@ -28,20 +28,28 @@ const {
   listSessions,
   sortedSessions,
   findSession,
+  findNameConflict,
   matchSessions,
   getDefaultTarget,
   sessionLabel,
+  validateSessionName,
 } = await import("../sessions.js");
 
 // process.pid and process.ppid are alive; use them so isProcessAlive passes.
 const ALIVE = process.pid;
 const ALIVE2 = process.ppid;
 
-function fake(id: string, name: string, pid: number, lastActive = Date.now()): void {
+function fake(
+  id: string,
+  name: string,
+  pid: number,
+  lastActive = Date.now(),
+  claudeName?: string
+): void {
   mkdirSync(sessionsDir, { recursive: true });
   writeFileSync(
     path.join(sessionsDir, `${id}.json`),
-    JSON.stringify({ id, name, cwd: `/fake/${name}`, pid, lastActive })
+    JSON.stringify({ id, name, cwd: `/fake/${name}`, pid, lastActive, claudeName })
   );
 }
 
@@ -131,6 +139,75 @@ describe("findSession", () => {
   it("returns undefined for an unknown selector", () => {
     fake("x", "one", ALIVE);
     expect(findSession("nope")).toBeUndefined();
+  });
+
+  it("accepts the Claude Code session name as an alias, exact and fuzzy", () => {
+    fake("x", "integration", ALIVE, Date.now(), "fintary-a9");
+    fake("y", "fintary:main", ALIVE2, Date.now(), "fintary-69");
+    expect(findSession("fintary-a9")?.id).toBe("x");
+    expect(findSession("FINTARY-A9")?.id).toBe("x");
+    expect(findSession("fintary-69")?.id).toBe("y");
+    // The WeChat routing name still wins an exact match over a fuzzy alias hit.
+    expect(findSession("integration")?.id).toBe("x");
+  });
+
+  it("does not let a Claude Code alias shadow an exact WeChat routing name", () => {
+    fake("x", "review", ALIVE, Date.now(), "backend-12");
+    fake("y", "backend-12", ALIVE2, Date.now(), "other-34");
+    expect(findSession("backend-12")?.id).toBe("y");
+  });
+});
+
+describe("validateSessionName", () => {
+  it("accepts a plain word and trims it", () => {
+    expect(validateSessionName("  integration ")).toEqual({
+      ok: true,
+      name: "integration",
+    });
+    expect(validateSessionName("fintary:main")).toEqual({
+      ok: true,
+      name: "fintary:main",
+    });
+  });
+
+  it("rejects empty names", () => {
+    expect(validateSessionName("   ").ok).toBe(false);
+  });
+
+  it("rejects whitespace and suggests a dashed form", () => {
+    const r = validateSessionName("reconciliation part 3");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.suggestion).toBe("reconciliation-part-3");
+  });
+
+  it("rejects purely numeric names, which /s would read as a number", () => {
+    const r = validateSessionName("42");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.suggestion).toBe("s42");
+  });
+
+  it("rejects a leading slash", () => {
+    const r = validateSessionName("/backend");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.suggestion).toBe("backend");
+  });
+});
+
+describe("findNameConflict", () => {
+  it("finds another live session holding the name, case-insensitively", () => {
+    fake("x", "integration", ALIVE);
+    fake("y", "other", ALIVE2);
+    expect(findNameConflict("Integration", "y")?.id).toBe("x");
+  });
+
+  it("ignores the session asking (renaming to its own name is idempotent)", () => {
+    fake("x", "integration", ALIVE);
+    expect(findNameConflict("integration", "x")).toBeUndefined();
+  });
+
+  it("returns undefined when the name is free", () => {
+    fake("x", "integration", ALIVE);
+    expect(findNameConflict("review", "y")).toBeUndefined();
   });
 });
 

@@ -152,7 +152,17 @@ Session 会根据工作目录自动命名：
 - Worktree：`仓库名/worktree名`（例如 `myapp/feature-x`）
 - 非 Git 目录：目录名
 
-用 `wechat_set_session_name` 可以设置自定义名字。
+要自定义名字，启动监听时直接带上：`/wechat integration`。这会在同一次调用里完成
+监听和命名；对一个已经叫这个名字的 session 重复执行是 no-op。也可以随时单独调用
+`wechat_set_session_name`。名字必须是不含空格的一个词（`/s <名字> <消息>` 只读一个
+词），不能是纯数字（会被当成编号或 pid），并且不能和另一个活着的 session 重名 ——
+重名会被拒绝并告知占用者的 pid，而不是悄悄加后缀。
+
+**两套命名空间，别混用。** 上面这些是**微信路由名**，只用于 `/s <名字> <消息>`。
+Claude Code 自己给每个 session 另有一个名字（例如 `myapp-a9`），那是其他 Claude
+session 用 `SendMessage` 找它时要用的（见 `ListAgents`）。`wechat_status` 的
+`Active sessions` 列表会把两个名字并排列出来（`SendMessage: ...` 那一栏），并且
+`/s` 也接受 Claude Code 名作为别名，所以看到哪个名字都能路由。
 
 ## 文件布局
 

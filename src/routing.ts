@@ -34,8 +34,13 @@ export function routingLines(selfId: string): string[] {
 
   const def = getDefaultTarget(sessions);
   if (def) {
+    // Spelled out rather than left as a bare fact: a session that reads
+    // "default target: <someone else>" as one flat line tends to miss that
+    // the user's plain messages are about to land elsewhere.
     lines.push(
-      `Default target for unbound plain messages: ${label(def)}${def.id === selfId ? " (this session)" : ""}`
+      def.id === selfId
+        ? `Default target for unbound plain messages: ${label(def)} (this session)`
+        : `Default target for unbound plain messages: ${label(def)} — NOT this session. Unbound plain messages will NOT arrive here; they go to the most recently active monitored session. To receive them here, the user sends "/use <n>" in WeChat (see /ls), or this session becomes the most recent one to run /wechat with its watcher active.`
     );
   }
   return lines;

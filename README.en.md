@@ -177,7 +177,21 @@ Sessions are automatically named based on the working directory:
 - Worktree: `reponame/worktree-name` (e.g., `myapp/feature-x`)
 - Non-git: directory name
 
-Use `wechat_set_session_name` to set a custom name.
+To pick a name, pass it when you start monitoring: `/wechat integration`.
+That names the session and starts the watcher in one go; running it again on
+a session that already has that name is a no-op. You can also call
+`wechat_set_session_name` on its own at any time. A name must be a single word
+without whitespace (`/s <name> <msg>` reads one word), must not be purely
+numeric (it would be read as a session number or pid), and must not collide
+with another live session — a collision is refused with the holder's pid
+rather than silently suffixed.
+
+**Two namespaces — don't mix them up.** The names above are **WeChat routing
+names**, used only in `/s <name> <msg>`. Claude Code gives every session its
+own, separate name (e.g. `myapp-a9`), which is what other Claude sessions must
+pass to `SendMessage` (see `ListAgents`). `wechat_status` lists both side by
+side in `Active sessions` (the `SendMessage: ...` column), and `/s` accepts the
+Claude Code name as an alias, so whichever name you saw will route.
 
 ## File Layout
 
