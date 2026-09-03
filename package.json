@@ -1,6 +1,6 @@
 {
   "name": "wechat-claude-sessions",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Control Claude Code via WeChat using the ilink Bot API",
   "type": "module",
   "license": "MIT",
