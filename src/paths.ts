@@ -19,6 +19,9 @@ export const REPLIES_DIR = path.join(WECHAT_DIR, "replies");
 // (used after a usage limit lifts, when the original announcement is long gone).
 export const NUDGE_DIR = path.join(WECHAT_DIR, "nudge");
 export const USAGE_STATE_FILE = path.join(WECHAT_DIR, "usage-limit.json");
+// Last answer from the npm registry about the newest published version, so
+// /sessions can mention an available update without asking npm every time.
+export const UPDATE_CHECK_FILE = path.join(WECHAT_DIR, "update-check.json");
 
 // Create the tree owner-only (0700) — it holds the bot token, context tokens,
 // and downloaded media. chmod (not just mkdir mode) so directories created

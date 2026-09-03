@@ -69,7 +69,7 @@ wechat-claude daemon           # 前台运行 / 交给你自己的进程管理�
 
 | 命令 | 说明 |
 |------|------|
-| `/sessions` 或 `/ls` | 列出活跃的 Claude Code session（`[监控中]` = 正在实时监控） |
+| `/sessions` 或 `/ls` | 列出活跃的 Claude Code session（`[监控中]` = 正在实时监控）。末尾显示当前 wechat-claude 版本；如果 npm 上有更新的 `latest`，会附带升级提示（最多每 6 小时查一次 npm，查不到就沿用上次结果） |
 | `/s <编号> <消息>` | 按编号发消息给某个 session。编号在 session 生命周期内固定不变 —— 其他 session 开启或关闭都不会让它移位（退役的编号不会被复用；所有 session 都消失后编号重新计数） |
 | `/use <编号\|名字\|pid>` | 把你的聊天绑定到某个 session：之后每条不带前缀的消息都直接发给它（daemon 重启后依然有效）。`/use off` 解绑；`/use` 查看当前绑定。被绑定的 session 关闭时会自动解绑 |
 | `/s <名字> <消息>` | 按名字发消息（模糊匹配；有歧义时优先选正在监控的 / 最近活跃的） |
@@ -184,6 +184,7 @@ session 用 `SendMessage` 找它时要用的（见 `ListAgents`）。`wechat_sta
 ├── cursor.txt            # 消息轮询游标
 ├── expired.flag          # 微信登录过期时存在
 ├── usage-limit.json      # 已知的 Claude 用量上限状态（含已通知的用户）
+├── update-check.json     # 上次从 npm 查到的最新版本（/ls 的升级提示用）
 ├── replies/              # 各 session 最近一次回复各微信用户的时间戳
 │   └── <pid>--<userId>
 ├── nudge/                # 让 watcher 重播积压 inbox 的信号（上限解除后）

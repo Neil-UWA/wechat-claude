@@ -12,7 +12,7 @@ import {
   parentPids,
 } from "./claude-sessions.js";
 import { ILinkClient } from "./ilink.js";
-import { PKG_ROOT } from "./pkg-root.js";
+import { PKG_VERSION } from "./version.js";
 import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js";
 import { isMonitoring, touchHeartbeat } from "./monitoring.js";
 import { markReplied } from "./replies.js";
@@ -40,16 +40,6 @@ import {
 const DAEMON_LOG_FILE = path.join(WECHAT_DIR, "daemon.log");
 const DAEMON_PATH = fileURLToPath(new URL("./daemon.js", import.meta.url));
 
-// Report the installed package's version rather than a hardcoded one that
-// drifts from package.json. npm always ships package.json, `files` or not.
-const PKG_VERSION: string = (() => {
-  try {
-    const raw = fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf-8");
-    return (JSON.parse(raw) as { version?: string }).version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-})();
 const WATCHER_PATH = fileURLToPath(new URL("./watch-inbox.js", import.meta.url));
 
 function ensureDirs(): void {
@@ -469,6 +459,7 @@ server.tool(
       sessions.filter((s) => !s.claudeName).map((s) => s.pid)
     );
     const lines = [
+      `wechat-claude v${PKG_VERSION}`,
       `Logged in: ${client.isLoggedIn}`,
       `Daemon running: ${daemon.running}${daemon.autoStarted ? " (auto-started just now)" : ""}`,
       `Session: ${sessionName.value} (id: ${sessionId})  ·  WeChat routing name, use in "/s ${sessionName.value} <msg>"`,

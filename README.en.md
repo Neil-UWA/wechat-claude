@@ -76,7 +76,7 @@ Send these from WeChat to control routing:
 
 | Command | Description |
 |---------|-------------|
-| `/sessions` or `/ls` | List active Claude Code sessions (`[监控中]` = actively monitoring) |
+| `/sessions` or `/ls` | List active Claude Code sessions (`[监控中]` = actively monitoring). Ends with the running wechat-claude version and, when npm has a newer `latest`, an upgrade notice (npm is asked at most every 6 hours; the last answer is reused if it can't be reached) |
 | `/s <number> <message>` | Send message to session by its number. Numbers are stable for a session's lifetime — they never shift when other sessions open or close (retired numbers aren't reused; numbering resets once all sessions are gone) |
 | `/use <number\|name\|pid>` | Bind your chat to one session: every plain message goes straight to it (survives daemon restarts). `/use off` unbinds; `/use` shows the current binding. Closing the bound session clears the binding automatically |
 | `/s <name> <message>` | Send message to session by name (fuzzy match; if ambiguous, prefers the monitored / most recently active one) |
@@ -215,6 +215,7 @@ with `SendMessage`, tells you on WeChat which session it went to and how to
 ├── cursor.txt            # message polling cursor
 ├── expired.flag          # present when the WeChat login has expired
 ├── usage-limit.json      # known Claude usage-limit state (incl. notified users)
+├── update-check.json     # last `latest` version seen on npm (for the /ls upgrade notice)
 ├── replies/              # last time each session replied to each WeChat user
 │   └── <pid>--<userId>
 ├── nudge/                # signal to re-announce a backlog (after a limit lifts)

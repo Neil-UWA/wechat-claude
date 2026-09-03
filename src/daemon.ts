@@ -49,6 +49,7 @@ import {
 import { peekInbox, writeToInbox } from "./inbox.js";
 import { CLAUDE_CONFIG_FILE, ensureBypassAccepted } from "./claude-config.js";
 import { type Lang, formatAgo, getLang, marker, t } from "./i18n.js";
+import { checkForUpdate } from "./version.js";
 import {
   hasTmux,
   isSafeSessionName,
@@ -988,7 +989,16 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
         m.legendRoute,
       ].join("\n"),
     ].filter(Boolean);
-    sendReply(sections.join("\n\n"));
+    // The version footer and the update notice need the registry (cached,
+    // bounded by a short timeout, never throws), so the reply goes out once
+    // that settles rather than making the listing synchronous.
+    void checkForUpdate().then((update) => {
+      sections.push(m.versionLine(update.current));
+      if (update.updateAvailable && update.latest) {
+        sections.push(m.updateAvailable(update.current, update.latest));
+      }
+      sendReply(sections.join("\n\n"));
+    });
     return;
   }
 
