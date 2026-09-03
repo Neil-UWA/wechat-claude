@@ -16,6 +16,7 @@ import { PKG_VERSION } from "./version.js";
 import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js";
 import { isMonitoring, touchHeartbeat } from "./monitoring.js";
 import { markReplied } from "./replies.js";
+import { replyFooter, withReplyFooter } from "./reply-footer.js";
 import { routingLines } from "./routing.js";
 import { transcriptPath } from "./transcripts.js";
 import { readUsageState, resetHint } from "./usage.js";
@@ -297,7 +298,7 @@ server.tool(
 
 server.tool(
   "wechat_send_text",
-  "Send a text message to a WeChat user.",
+  "Send a text message to a WeChat user. A one-line trailer naming this session and its '/s <n>' reply command is appended automatically (config.json \"replyFooter\": false disables it) — do not add your own.",
   {
     to_user_id: z.string().describe("User ID (e.g. 'xxx@im.wechat')"),
     text: z.string().describe("Text message to send"),
@@ -311,7 +312,10 @@ server.tool(
     }
     try {
       clearTyping(to_user_id);
-      await client.sendText(to_user_id, text);
+      await client.sendText(
+        to_user_id,
+        withReplyFooter(text, replyFooter(sessionId, sessionName.value))
+      );
       // Tells the daemon this session actually answered, so its silence
       // watchdog (usage-limit detection) stops tracking the delivery.
       markReplied(sessionId, to_user_id);
@@ -337,7 +341,7 @@ server.tool(
 
 server.tool(
   "wechat_send_image",
-  "Send an image file to a WeChat user.",
+  "Send an image file to a WeChat user. The session trailer (see wechat_send_text) is appended to the caption, or sent as the caption when none is given.",
   {
     to_user_id: z.string().describe("User ID (e.g. 'xxx@im.wechat')"),
     file_path: z.string().describe("Absolute path to the image file"),
@@ -359,7 +363,11 @@ server.tool(
         };
       }
       clearTyping(to_user_id);
-      await client.sendImage(to_user_id, file_path, caption);
+      const footer = replyFooter(sessionId, sessionName.value);
+      const fullCaption = caption
+        ? withReplyFooter(caption, footer)
+        : footer || undefined;
+      await client.sendImage(to_user_id, file_path, fullCaption);
       markReplied(sessionId, to_user_id);
       await client.sendTyping(to_user_id, false);
       return {

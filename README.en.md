@@ -277,6 +277,21 @@ server's pid.
    whether Claude's usage limit is the cause and explains it on WeChat (see
    [Usage limits](#usage-limits-when-every-session-goes-quiet))
 
+## Reply footer
+
+Every reply a session sends to WeChat (`wechat_send_text`, and the caption of
+`wechat_send_image`) ends with one line saying which session is speaking and
+how to answer it directly:
+
+```
+—— from naming (#4) · reply directly: /s 4 <message>
+```
+
+The number is the stable one from `/ls`, fixed for the session's lifetime. When
+several sessions answer into the same chat you no longer have to `/ls` and guess
+who said what. To turn it off, add `"replyFooter": false` to
+`~/.claude/wechat/config.json`.
+
 ## Language
 
 Bot replies default to Chinese (the WeChat audience). To switch to English, set

@@ -243,6 +243,19 @@ wechat-claude daemon restart
 7. 如果长时间既没被读也没被回，daemon 会检查是不是撞上了 Claude 用量上限，并在微信里说明
    （见[用量上限](#用量上限session-集体不回复)）
 
+## 回复尾注
+
+session 发到微信的每条回复（`wechat_send_text`，以及 `wechat_send_image` 的说明文字）
+末尾都会自动带一行，标明是哪个 session 在说话、怎么直接回它：
+
+```
+—— 来自 naming（#4）· 直接回复: /s 4 <消息>
+```
+
+编号就是 `/ls` 里的稳定编号，整个 session 生命周期内不变。多个 session 往同一个聊天里
+回复时，不用先 `/ls` 再猜是谁说的。不想要的话在 `~/.claude/wechat/config.json` 里加
+`"replyFooter": false`。
+
 ## 语言
 
 机器人回复默认用中文（面向微信用户）。要切换成英文，在

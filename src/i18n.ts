@@ -145,6 +145,8 @@ type Msgs = {
   legendRoute: string;
   versionLine: (version: string) => string;
   updateAvailable: (current: string, latest: string) => string;
+  // trailer on every reply a session sends; n is the stable /ls number
+  replyFooter: (name: string, n: number | undefined) => string;
   noRepoDirs: string;
   // usage limit
   usageLimited: (resetHint: string, waiting: string) => string;
@@ -278,6 +280,10 @@ const zh: Msgs = {
   versionLine: (version) => `wechat-claude v${version}`,
   updateAvailable: (current, latest) =>
     `⬆️ 有新版本 v${latest}（当前 v${current}）。在电脑上更新:\nnpm i -g wechat-claude-sessions@latest && wechat-claude daemon restart\n然后在各 Claude Code session 里 /mcp → wechat → Reconnect，再 /wechat 重新挂上。`,
+  replyFooter: (name, n) =>
+    n === undefined
+      ? `—— 来自 ${name} · 直接回复: /s ${name} <消息>`
+      : `—— 来自 ${name}（#${n}）· 直接回复: /s ${n} <消息>`,
   noRepoDirs: "  （无，可在 ~/.claude/wechat/config.json 配置 repoDirs）",
   usageLimited: (resetHint, waiting) =>
     `⚠️ Claude 用量已达上限，所有 session 现在都无法回复（不是掉线，消息已经收到了）。\n\n预计恢复: ${resetHint}\n${waiting}\n\n恢复后我会主动告诉你，并提醒 session 处理积压的消息。期间可以继续发消息，我会存好。\n发送 /usage 可随时查询。`,
@@ -414,6 +420,10 @@ const en: Msgs = {
   versionLine: (version) => `wechat-claude v${version}`,
   updateAvailable: (current, latest) =>
     `⬆️ Update available: v${latest} (you have v${current}). On your computer:\nnpm i -g wechat-claude-sessions@latest && wechat-claude daemon restart\nthen in each Claude Code session: /mcp → wechat → Reconnect, and /wechat again.`,
+  replyFooter: (name, n) =>
+    n === undefined
+      ? `—— from ${name} · reply directly: /s ${name} <message>`
+      : `—— from ${name} (#${n}) · reply directly: /s ${n} <message>`,
   noRepoDirs: "  (none — configure repoDirs in ~/.claude/wechat/config.json)",
   usageLimited: (resetHint, waiting) =>
     `⚠️ Claude's usage limit is reached — no session can reply right now (nothing crashed; your message did arrive).\n\nExpected reset: ${resetHint}\n${waiting}\n\nI'll tell you as soon as it lifts and nudge the sessions to handle what piled up. Keep sending — messages are kept.\nSend /usage to check any time.`,
