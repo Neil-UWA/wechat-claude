@@ -164,6 +164,11 @@ session 用 `SendMessage` 找它时要用的（见 `ListAgents`）。`wechat_sta
 `Active sessions` 列表会把两个名字并排列出来（`SendMessage: ...` 那一栏），并且
 `/s` 也接受 Claude Code 名作为别名，所以看到哪个名字都能路由。
 
+这也让**转发**成为可能：不带前缀的消息会落到默认或绑定的 session，但你说的可能是另一个
+（"让 integration 跑一下测试"）。收到消息的 session 会对照 `Active sessions` 列表
+（路由名、`SendMessage:` 名或工作目录）推算出目标，用 `SendMessage` 转过去，在微信里
+告诉你转给了谁、下次怎么直接 `/s` 过去，并把对方的回复转回来。
+
 ## 文件布局
 
 ```

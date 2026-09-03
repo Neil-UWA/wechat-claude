@@ -193,6 +193,13 @@ pass to `SendMessage` (see `ListAgents`). `wechat_status` lists both side by
 side in `Active sessions` (the `SendMessage: ...` column), and `/s` accepts the
 Claude Code name as an alias, so whichever name you saw will route.
 
+That also makes **relaying** possible: a plain message lands in the default or
+bound session, but you may mean another one ("tell integration to run the
+tests"). The receiving session works out the target from the `Active sessions`
+list (routing name, `SendMessage:` name, or working directory), forwards it
+with `SendMessage`, tells you on WeChat which session it went to and how to
+`/s` it directly next time, and relays the reply back.
+
 ## File Layout
 
 ```
