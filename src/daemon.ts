@@ -1020,15 +1020,18 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
           d.claude
         );
       });
+    // The sample "/s <n>" in the legend uses a number that is really listed,
+    // preferably the first non-idle one.
+    const example =
+      entries.find(({ s }) => !isIdle(s))?.num ?? entries[0]?.num ?? 1;
     sendWithVersionFooter(
       [
         m.sessionsHeader(sessions.length),
         mainLines.join("\n\n"),
-        idleLines.length > 0 ? m.idleSection(idleLines.join("\n")) : "",
-        // WeChat collapses single newlines, so the legend is two paragraphs:
-        // what the symbols mean, then how to reply.
+        idleLines.length > 0 ? m.idleSection(idleLines.join("\n\n")) : "",
+        // Legend as two paragraphs: what the symbols mean, then how to reply.
         [bound ? m.legendBound : m.legendDefault, m.legendNumbers].join("\n"),
-        m.legendRoute,
+        m.legendRoute(example),
       ].filter(Boolean)
     );
     return;
