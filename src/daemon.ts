@@ -991,11 +991,10 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
       m.sessionsHeader(sessions.length),
       mainLines.join("\n\n"),
       idleLines.length > 0 ? m.idleSection(idleLines.join("\n")) : "",
-      [
-        bound ? m.legendBound : m.legendDefault,
-        m.legendNumbers,
-        m.legendRoute,
-      ].join("\n"),
+      // WeChat collapses single newlines, so the legend is two paragraphs:
+      // what the symbols mean, then how to reply.
+      [bound ? m.legendBound : m.legendDefault, m.legendNumbers].join("\n"),
+      m.legendRoute,
     ].filter(Boolean);
     // The version footer and the update notice need the registry (cached,
     // bounded by a short timeout, never throws), so the reply goes out once
