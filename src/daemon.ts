@@ -50,7 +50,12 @@ import {
 import { peekInbox, writeToInbox } from "./inbox.js";
 import { CLAUDE_CONFIG_FILE, ensureBypassAccepted } from "./claude-config.js";
 import { type Lang, formatAgo, getLang, marker, t } from "./i18n.js";
-import { checkForUpdate } from "./version.js";
+import {
+  checkForUpdate,
+  packagePageUrl,
+  parseVersion,
+  versionLink,
+} from "./version.js";
 import { claudeRecordsForSessions } from "./claude-sessions.js";
 import {
   hasTmux,
@@ -1000,9 +1005,12 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     // bounded by a short timeout, never throws), so the reply goes out once
     // that settles rather than making the listing synchronous.
     void checkForUpdate().then((update) => {
-      sections.push(m.versionLine(update.current));
+      const info = parseVersion(update.current);
+      sections.push(m.versionLine(info, versionLink(info)));
       if (update.updateAvailable && update.latest) {
-        sections.push(m.updateAvailable(update.current, update.latest));
+        sections.push(
+          m.updateAvailable(update.current, update.latest, packagePageUrl())
+        );
       }
       sendReply(sections.join("\n\n"));
     });
