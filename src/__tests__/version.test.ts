@@ -2,12 +2,7 @@ import { describe, it, expect, afterAll } from "vitest";
 import { tmpdir } from "node:os";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import {
-  checkForUpdate,
-  compareVersions,
-  parseVersion,
-  readPkgVersion,
-} from "../version.js";
+import { checkForUpdate, compareVersions, readPkgVersion } from "../version.js";
 
 const dir = mkdtempSync(path.join(tmpdir(), "wc-version-test-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -34,37 +29,6 @@ describe("readPkgVersion", () => {
     ) as { version: string };
     expect(readPkgVersion()).toBe(own.version);
   });
-});
-
-describe("parseVersion", () => {
-  it("takes a branch dev build apart", () => {
-    expect(parseVersion("1.2.0-dev.session-naming.10.1e0b17f")).toEqual({
-      raw: "1.2.0-dev.session-naming.10.1e0b17f",
-      base: "1.2.0",
-      dev: { branch: "session-naming", build: 10, sha: "1e0b17f" },
-    });
-  });
-
-  it("takes a dev-branch build (no slug) apart", () => {
-    expect(parseVersion("1.2.0-dev.10.1e0b17f").dev).toEqual({
-      branch: undefined,
-      build: 10,
-      sha: "1e0b17f",
-    });
-  });
-
-  it("treats a release as having no dev part, and tolerates a v prefix", () => {
-    expect(parseVersion("v1.2.0")).toEqual({ raw: "1.2.0", base: "1.2.0" });
-    expect(parseVersion("1.2.0")).toEqual({ raw: "1.2.0", base: "1.2.0" });
-  });
-
-  it("keeps an unrecognised prerelease intact rather than mangling it", () => {
-    const info = parseVersion("1.2.0-rc.1");
-    expect(info.base).toBe("1.2.0");
-    expect(info.dev).toBeUndefined();
-    expect(info.raw).toBe("1.2.0-rc.1");
-  });
-
 });
 
 describe("compareVersions", () => {

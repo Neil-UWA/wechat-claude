@@ -50,7 +50,7 @@ import {
 import { peekInbox, writeToInbox } from "./inbox.js";
 import { CLAUDE_CONFIG_FILE, ensureBypassAccepted } from "./claude-config.js";
 import { type Lang, formatAgo, getLang, marker, t } from "./i18n.js";
-import { checkForUpdate, parseVersion } from "./version.js";
+import { checkForUpdate } from "./version.js";
 import { claudeRecordsForSessions } from "./claude-sessions.js";
 import {
   hasTmux,
@@ -950,9 +950,9 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     // reply carries it, including the "no sessions" one.
     const sendWithVersionFooter = (sections: string[]): void => {
       void checkForUpdate().then((update) => {
-        // Only x.y.z: a dev build's "-dev.<branch>.<run>.<sha>" tail means
-        // nothing to someone reading it on their phone.
-        sections.push(m.versionLine(parseVersion(update.current).base));
+        // The full version string, dev suffix included, so a test build can
+        // be told from a release and from another test build.
+        sections.push(m.versionLine(update.current));
         if (update.updateAvailable && update.latest) {
           sections.push(m.updateAvailable(update.current, update.latest));
         }

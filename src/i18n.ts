@@ -153,7 +153,7 @@ type Msgs = {
   legendNumbers: string;
   // example: a number that is actually in the list, so the sample command works
   legendRoute: (example: number) => string;
-  // Labelled "this is the running version" footer: just the x.y.z version.
+  // Labelled "this is the running version" footer, full version string.
   versionLine: (version: string) => string;
   updateAvailable: (current: string, latest: string) => string;
   // trailer on every reply a session sends; n is the stable /ls number

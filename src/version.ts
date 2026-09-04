@@ -24,31 +24,6 @@ export function readPkgVersion(root: string = PKG_ROOT): string {
 
 export const PKG_VERSION: string = readPkgVersion();
 
-// A version string taken apart so display can show just x.y.z. Dev builds are
-// produced by the publish workflow as "<base>-dev.<branch-slug>.<run>.<sha>"
-// (the slug is omitted on the dev branch itself).
-export type VersionInfo = {
-  raw: string;
-  base: string;
-  dev?: { branch?: string; build: number; sha: string };
-};
-
-export function parseVersion(raw: string): VersionInfo {
-  const v = raw.trim().replace(/^v/, "");
-  const dev = v.match(
-    /^(\d+\.\d+\.\d+)-dev\.(?:([a-z0-9-]+)\.)?(\d+)\.([0-9a-f]{7,40})$/
-  );
-  if (dev) {
-    return {
-      raw: v,
-      base: dev[1],
-      dev: { branch: dev[2], build: Number(dev[3]), sha: dev[4] },
-    };
-  }
-  const base = v.match(/^(\d+\.\d+\.\d+)/);
-  return { raw: v, base: base ? base[1] : v };
-}
-
 
 // Numeric compare of the x.y.z part. A prerelease sorts below its own release
 // (1.2.0-dev.3 < 1.2.0), otherwise prerelease text is ignored. Returns

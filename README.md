@@ -69,7 +69,7 @@ wechat-claude daemon           # 前台运行 / 交给你自己的进程管理�
 
 | 命令 | 说明 |
 |------|------|
-| `/sessions` 或 `/ls` | 列出活跃的 Claude Code session（`👀` = 监控中，正在实时读取消息；`📌 已绑定` = 你的消息都发到这里；`📥 默认接收` = 不带前缀的消息发到这里）。每条一段、每个字段一行，按手机宽度排版：第一行 `○【5】fintary:main 👀 📌 已绑定`，下面依次 `📁 fintary/data-sync-field-mapping`（Claude 当前所在目录，worktree 显示为 `仓库/worktree名`）、`🤖 fintary-69`（Claude Code 跨会话名）、`⏱ 3 小时前`；同名 session 靠 📁 和 🤖 区分。用 emoji 当字段标签，所以桌面版微信把换行折成空格时依然可读。末尾一段是当前版本标签：`📦 当前版本：wechat-claude @ v1.2.0`（只显示 x.y.z，预发布构建的后缀不显示）。如果 npm 上有更新的 `latest`，再附一段升级提示（最多每 6 小时查一次 npm，查不到就沿用上次结果，失败后 30 分钟内不再重试） |
+| `/sessions` 或 `/ls` | 列出活跃的 Claude Code session（`👀` = 监控中，正在实时读取消息；`📌 已绑定` = 你的消息都发到这里；`📥 默认接收` = 不带前缀的消息发到这里）。每条一段、每个字段一行，按手机宽度排版：第一行 `○【5】fintary:main 👀 📌 已绑定`，下面依次 `📁 fintary/data-sync-field-mapping`（Claude 当前所在目录，worktree 显示为 `仓库/worktree名`）、`🤖 fintary-69`（Claude Code 跨会话名）、`⏱ 3 小时前`；同名 session 靠 📁 和 🤖 区分。用 emoji 当字段标签，所以桌面版微信把换行折成空格时依然可读。末尾一段是当前版本标签：`📦 当前版本：wechat-claude @ v1.2.0`，预发布构建显示完整版本号（如 `v1.2.0-dev.session-naming.12.2f0809f`），好区分是哪个测试构建。如果 npm 上有更新的 `latest`，再附一段升级提示（最多每 6 小时查一次 npm，查不到就沿用上次结果，失败后 30 分钟内不再重试） |
 | `/s <编号> <消息>` | 按编号发消息给某个 session。编号在 session 生命周期内固定不变 —— 其他 session 开启或关闭都不会让它移位（退役的编号不会被复用；所有 session 都消失后编号重新计数） |
 | `/use <编号\|名字\|pid>` | 把你的聊天绑定到某个 session：之后每条不带前缀的消息都直接发给它（daemon 重启后依然有效）。`/use off` 解绑；`/use` 查看当前绑定。被绑定的 session 关闭时会自动解绑 |
 | `/s <名字> <消息>` | 按名字发消息（模糊匹配；有歧义时优先选正在监控的 / 最近活跃的） |
