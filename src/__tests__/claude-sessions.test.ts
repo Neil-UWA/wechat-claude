@@ -109,22 +109,17 @@ describe("claudeNameForMcpPid", () => {
 });
 
 describe("ownClaudeSessionName", () => {
-  it("returns the name when the session id matches", () => {
+  it("returns the name recorded for the parent pid", () => {
     record(200, { pid: 200, sessionId: "s-200", name: "mine-11" });
-    expect(ownClaudeSessionName(200, "s-200", dir)).toBe("mine-11");
+    expect(ownClaudeSessionName(200, dir)).toBe("mine-11");
   });
 
-  it("returns the name when we have no session id to check against", () => {
-    record(201, { pid: 201, sessionId: "s-201", name: "mine-22" });
-    expect(ownClaudeSessionName(201, undefined, dir)).toBe("mine-22");
-  });
-
-  it("refuses a stale record left by a different session on a reused pid", () => {
-    record(202, { pid: 202, sessionId: "old-session", name: "stranger-33" });
-    expect(ownClaudeSessionName(202, "new-session", dir)).toBeUndefined();
+  it("does not depend on the session id — a resumed session's MCP server carries a different one", () => {
+    record(202, { pid: 202, sessionId: "resumed-original-id", name: "resumed-33" });
+    expect(ownClaudeSessionName(202, dir)).toBe("resumed-33");
   });
 
   it("returns undefined when Claude Code left no record", () => {
-    expect(ownClaudeSessionName(203, "s-203", dir)).toBeUndefined();
+    expect(ownClaudeSessionName(203, dir)).toBeUndefined();
   });
 });

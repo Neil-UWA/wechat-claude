@@ -122,7 +122,7 @@ function currentSessionInfo(): SessionInfo {
       ? transcriptPath(process.cwd(), claudeSessionId)
       : undefined,
     // Re-read each time: Claude Code can rename its session after we start.
-    claudeName: ownClaudeSessionName(process.ppid, process.env.CLAUDE_CODE_SESSION_ID),
+    claudeName: ownClaudeSessionName(process.ppid),
   };
 }
 
@@ -462,7 +462,7 @@ server.tool(
     const sessions = listSessions();
     const inboxCount = peekInbox();
     const monitoring = isMonitoring(sessionId);
-    const ownClaudeName = ownClaudeSessionName(process.ppid, process.env.CLAUDE_CODE_SESSION_ID);
+    const ownClaudeName = ownClaudeSessionName(process.ppid);
     const parents = parentPids(
       sessions.filter((s) => !s.claudeName).map((s) => s.pid)
     );

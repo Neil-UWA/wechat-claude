@@ -52,22 +52,17 @@ export function readClaudeSession(
 }
 
 // The cross-session name of the Claude Code process that owns an MCP server
-// (its process.ppid), or undefined when it can't be established. When Claude
-// Code told us its session id (CLAUDE_CODE_SESSION_ID), a record with a
-// different id is rejected — pids get reused, and a stale file must not lend
-// us a stranger's name. Callers pass the process values explicitly; defaults
-// here would silently kick back in whenever a caller passes undefined.
+// (its process.ppid), or undefined when it can't be established. The record
+// is trusted on the strength of the pid alone: the parent is alive and is by
+// construction the Claude process. Do NOT cross-check CLAUDE_CODE_SESSION_ID
+// against the record's sessionId — on `claude --resume` the MCP server is
+// spawned with a fresh id before Claude Code adopts the resumed one, so the
+// two legitimately differ and the check reported "unknown" for a live session.
 export function ownClaudeSessionName(
   claudePid: number,
-  claudeSessionId: string | undefined,
   sessionsDir: string = CLAUDE_SESSIONS_DIR
 ): string | undefined {
-  const rec = readClaudeSession(claudePid, sessionsDir);
-  if (!rec) return undefined;
-  if (claudeSessionId && rec.sessionId && rec.sessionId !== claudeSessionId) {
-    return undefined;
-  }
-  return rec.name;
+  return readClaudeSession(claudePid, sessionsDir)?.name;
 }
 
 // Largest pid any supported platform hands out (Linux pid_max ceiling; macOS
