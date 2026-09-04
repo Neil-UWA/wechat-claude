@@ -147,8 +147,9 @@ type Msgs = {
   legendDefault: string;
   legendNumbers: string;
   legendRoute: string;
-  // Labelled "this is the running version" footer, with a link to the exact
-  // build (commit for a dev build, npm version page for a release).
+  // Labelled "this is the running version" footer: just the x.y.z version,
+  // with a link to the exact build (commit for a dev build, npm version page
+  // for a release) for anyone who wants the details.
   versionLine: (info: VersionInfo, link: string) => string;
   updateAvailable: (current: string, latest: string, link: string) => string;
   // trailer on every reply a session sends; n is the stable /ls number
@@ -286,10 +287,7 @@ const zh: Msgs = {
   legendDefault: "📥 默认接收 = 不带前缀的消息发到这里（/use <编号> 可固定绑定）",
   legendNumbers: "👀 监控中 · 📁 目录 · 🤖 Claude Code 会话名 · ⏱ 上次活跃 · 【编号】固定不变",
   legendRoute: "回复某个 session：/s <编号> <消息>，例 /s 5 你好",
-  versionLine: (info, link) =>
-    info.dev
-      ? `📦 当前版本：wechat-claude @ v${info.base} 预发布版（${info.dev.branch ? `分支 ${info.dev.branch} · ` : ""}构建 #${info.dev.build} · 提交 ${info.dev.sha}）\n${link}`
-      : `📦 当前版本：wechat-claude @ v${info.base}\n${link}`,
+  versionLine: (info, link) => `📦 当前版本：wechat-claude @ v${info.base}\n${link}`,
   updateAvailable: (current, latest, link) =>
     `⬆️ 有新版本 v${latest}（当前 v${current}）${link}\n在电脑上更新:\nnpm i -g wechat-claude-sessions@latest && wechat-claude daemon restart\n然后在各 Claude Code session 里 /mcp → wechat → Reconnect，再 /wechat 重新挂上。`,
   replyFooter: (name, n) =>
@@ -429,10 +427,7 @@ const en: Msgs = {
   legendDefault: "📥 default = plain messages go here (/use <n> to pin)",
   legendNumbers: "👀 monitoring · 📁 directory · 🤖 Claude Code session name · ⏱ last active · [n] numbers are stable",
   legendRoute: "Reply to one session: /s <n> <message>, e.g. /s 5 hello",
-  versionLine: (info, link) =>
-    info.dev
-      ? `📦 Running version: wechat-claude @ v${info.base} pre-release (${info.dev.branch ? `branch ${info.dev.branch} · ` : ""}build #${info.dev.build} · commit ${info.dev.sha})\n${link}`
-      : `📦 Running version: wechat-claude @ v${info.base}\n${link}`,
+  versionLine: (info, link) => `📦 Running version: wechat-claude @ v${info.base}\n${link}`,
   updateAvailable: (current, latest, link) =>
     `⬆️ Update available: v${latest} (you have v${current}) ${link}\nOn your computer:\nnpm i -g wechat-claude-sessions@latest && wechat-claude daemon restart\nthen in each Claude Code session: /mcp → wechat → Reconnect, and /wechat again.`,
   replyFooter: (name, n) =>
