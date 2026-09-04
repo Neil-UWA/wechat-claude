@@ -7,9 +7,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import {
-  claudeNameForMcpPid,
+  type ClaudeSessionRecord,
+  claudeRecordsForSessions,
   ownClaudeSessionName,
-  parentPids,
 } from "./claude-sessions.js";
 import { ILinkClient } from "./ilink.js";
 import { PKG_VERSION } from "./version.js";
@@ -31,6 +31,7 @@ import {
 } from "./paths.js";
 import {
   type SessionInfo,
+  cwdLabel,
   detectSessionName as detectSessionNameFor,
   findNameConflict,
   listSessions,
@@ -99,12 +100,16 @@ const sessionId = String(process.pid);
 const sessionName = { value: detectSessionName() };
 const client = new ILinkClient();
 
-// A session's Claude Code name for display: what it recorded itself, else
-// looked up through its MCP server's parent process (sessions from an older
-// build recorded nothing). Never guessed: a wrong name here is worse than
-// "unknown", because an agent will act on it.
-function claudeNameLabel(s: SessionInfo, parents: Map<number, number>): string {
-  return s.claudeName ?? claudeNameForMcpPid(s.pid, parents) ?? "unknown";
+// A session's Claude Code name for display: the live registry record (found
+// through its MCP server's parent process) first, since Claude Code can rename
+// a session after its session file was last written; the stored name only as
+// a fallback (e.g. `ps` unavailable). Never guessed: a wrong name here is
+// worse than "unknown", because an agent will act on it.
+function claudeNameLabel(
+  s: SessionInfo,
+  records: Map<string, ClaudeSessionRecord>
+): string {
+  return records.get(s.id)?.name ?? s.claudeName ?? "unknown";
 }
 
 function currentSessionInfo(): SessionInfo {
@@ -367,7 +372,12 @@ server.tool(
       const fullCaption = caption
         ? withReplyFooter(caption, footer)
         : footer || undefined;
-      await client.sendImage(to_user_id, file_path, fullCaption);
+      // The caption goes through sendText, which splits at the API's text
+      // limit; sendImage sends its caption as a single item and would fail
+      // once the footer pushed a long caption over that limit. Same order as
+      // sendImage's own caption handling: text first, then the image.
+      if (fullCaption) await client.sendText(to_user_id, fullCaption);
+      await client.sendImage(to_user_id, file_path);
       markReplied(sessionId, to_user_id);
       await client.sendTyping(to_user_id, false);
       return {
@@ -424,7 +434,7 @@ server.tool(
     }
     const holder = findNameConflict(name, sessionId);
     if (holder) {
-      const theirs = `, Claude Code name: ${claudeNameLabel(holder, parentPids([holder.pid]))}`;
+      const theirs = `, Claude Code name: ${claudeNameLabel(holder, claudeRecordsForSessions([holder]))}`;
       return {
         content: [
           {
@@ -463,9 +473,9 @@ server.tool(
     const inboxCount = peekInbox();
     const monitoring = isMonitoring(sessionId);
     const ownClaudeName = ownClaudeSessionName(process.ppid);
-    const parents = parentPids(
-      sessions.filter((s) => !s.claudeName).map((s) => s.pid)
-    );
+    // Every live session's Claude Code record, in one `ps` call: the current
+    // cross-session name and the directory Claude is really in now.
+    const records = claudeRecordsForSessions(sessions);
     const lines = [
       `wechat-claude v${PKG_VERSION}`,
       `Logged in: ${client.isLoggedIn}`,
@@ -480,10 +490,11 @@ server.tool(
         const active = Date.now() - s.lastActive < 120_000 ? "●" : "○";
         const mon = isMonitoring(s.id) ? " [monitoring]" : "";
         const self = s.id === sessionId ? " (this session)" : "";
-        const claude = `  ·  SendMessage: ${claudeNameLabel(s, parents)}`;
-        return `  ${active} ${s.name} (pid: ${s.pid})${mon}${self}${claude}`;
+        const dir = `  ·  dir: ${cwdLabel(records.get(s.id)?.cwd ?? s.cwd)}`;
+        const claude = `  ·  SendMessage: ${claudeNameLabel(s, records)}`;
+        return `  ${active} ${s.name} (pid: ${s.pid})${mon}${self}${dir}${claude}`;
       }),
-      `  (Names before "(pid" are WeChat routing names for "/s <name> <msg>" — they are NOT Claude Code session names. To message a session with SendMessage, use the name after "SendMessage:", or ListAgents. Either name works as the /s selector.)`,
+      `  (Names before "(pid" are WeChat routing names for "/s <name> <msg>" — they are NOT Claude Code session names. To message a session with SendMessage, use the name after "SendMessage:", or ListAgents. Either name works as the /s selector. "dir:" is the directory that session's Claude is currently in, worktrees as repo/worktree.)`,
     ];
     // The daemon records this; a session that was rate-limited comes back with
     // no idea why it went quiet, and the user is owed an explanation.

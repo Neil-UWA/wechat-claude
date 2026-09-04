@@ -78,22 +78,27 @@ export type UpdateCheck = {
   updateAvailable: boolean;
 };
 
-type Cache = { checkedAt: number; latest: string };
+// checkedAt/latest: the last successful answer. attemptedAt: the last time the
+// registry was asked at all, success or not, so an offline machine doesn't pay
+// the timeout on every /ls.
+type Cache = { checkedAt: number; latest?: string; attemptedAt?: number };
 
 export const UPDATE_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
+// How long to wait before asking again after a failed attempt.
+export const UPDATE_CHECK_RETRY_MS = 30 * 60 * 1000;
 export const UPDATE_CHECK_TIMEOUT_MS = 3000;
 
 function readCache(file: string): Cache | undefined {
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf-8"));
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      typeof (parsed as Cache).checkedAt === "number" &&
-      typeof (parsed as Cache).latest === "string"
-    ) {
-      return parsed as Cache;
-    }
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const c = parsed as Record<string, unknown>;
+    if (typeof c.checkedAt !== "number") return undefined;
+    return {
+      checkedAt: c.checkedAt,
+      latest: typeof c.latest === "string" ? c.latest : undefined,
+      attemptedAt: typeof c.attemptedAt === "number" ? c.attemptedAt : undefined,
+    };
   } catch {}
   return undefined;
 }
@@ -138,11 +143,17 @@ export type UpdateCheckOptions = {
   now?: number;
   cacheFile?: string;
   ttlMs?: number;
+  retryMs?: number;
   fetchLatest?: () => Promise<string | undefined>;
 };
 
-// Never rejects. Uses the cached answer while it is fresh; otherwise asks the
-// registry and, if that fails, falls back to whatever was cached before.
+// One registry request in flight per cache file: two /ls in quick succession
+// share the answer instead of both paying the timeout and racing the cache.
+const inflight = new Map<string, Promise<string | undefined>>();
+
+// Never rejects. Uses the cached answer while it is fresh; after a failed
+// attempt waits `retryMs` before asking again; otherwise asks the registry
+// and, if that fails, falls back to whatever was cached before.
 export async function checkForUpdate(
   opts: UpdateCheckOptions = {}
 ): Promise<UpdateCheck> {
@@ -150,16 +161,36 @@ export async function checkForUpdate(
   const now = opts.now ?? Date.now();
   const cacheFile = opts.cacheFile ?? UPDATE_CHECK_FILE;
   const ttlMs = opts.ttlMs ?? UPDATE_CHECK_TTL_MS;
+  const retryMs = opts.retryMs ?? UPDATE_CHECK_RETRY_MS;
   const fetchLatest = opts.fetchLatest ?? (() => fetchLatestVersion());
 
   const cached = readCache(cacheFile);
+  const fresh =
+    cached?.latest !== undefined && now - cached.checkedAt < ttlMs;
+  const recentlyFailed =
+    cached?.attemptedAt !== undefined && now - cached.attemptedAt < retryMs;
+
   let latest: string | undefined;
-  if (cached && now - cached.checkedAt < ttlMs) {
-    latest = cached.latest;
+  if (fresh || recentlyFailed) {
+    latest = cached?.latest;
   } else {
-    latest = await fetchLatest();
-    if (latest) writeCache(cacheFile, { checkedAt: now, latest });
-    else latest = cached?.latest;
+    let pending = inflight.get(cacheFile);
+    if (!pending) {
+      pending = fetchLatest().finally(() => inflight.delete(cacheFile));
+      inflight.set(cacheFile, pending);
+    }
+    const fetched = await pending;
+    if (fetched) {
+      latest = fetched;
+      writeCache(cacheFile, { checkedAt: now, latest, attemptedAt: now });
+    } else {
+      latest = cached?.latest;
+      writeCache(cacheFile, {
+        checkedAt: cached?.checkedAt ?? 0,
+        latest: cached?.latest,
+        attemptedAt: now,
+      });
+    }
   }
   return {
     current,

@@ -138,7 +138,13 @@ type Msgs = {
     claude: string | undefined
   ) => string;
   idleSection: (body: string) => string;
-  idleEntry: (n: number, label: string, ago: string) => string;
+  idleEntry: (
+    n: number,
+    label: string,
+    ago: string,
+    dir: string,
+    claude: string | undefined
+  ) => string;
   boundTag: string;
   defaultTag: string;
   monitoringTag: string;
@@ -276,7 +282,8 @@ const zh: Msgs = {
     `${dot}【${n}】${label}${tags}\n📁 ${dir}${claude ? ` · 🤖 ${claude}` : ""} · ⏱ ${ago}`,
   idleSection: (body) =>
     `💤 闲置（未监控、2 小时以上未活跃）\n${body}\n可发 /close idle 一键清理`,
-  idleEntry: (n, label, ago) => `○【${n}】${label} · ⏱ ${ago}`,
+  idleEntry: (n, label, ago, dir, claude) =>
+    `○【${n}】${label} · 📁 ${dir}${claude ? ` · 🤖 ${claude}` : ""} · ⏱ ${ago}`,
   boundTag: " 📌 已绑定",
   defaultTag: " 📥 默认接收",
   monitoringTag: " 👀",
@@ -416,7 +423,8 @@ const en: Msgs = {
     `${dot} [${n}] ${label}${tags}\n📁 ${dir}${claude ? ` · 🤖 ${claude}` : ""} · ⏱ ${ago}`,
   idleSection: (body) =>
     `💤 Idle (unmonitored, 2h+ inactive)\n${body}\nSend /close idle to clean up`,
-  idleEntry: (n, label, ago) => `○ [${n}] ${label} · ⏱ ${ago}`,
+  idleEntry: (n, label, ago, dir, claude) =>
+    `○ [${n}] ${label} · 📁 ${dir}${claude ? ` · 🤖 ${claude}` : ""} · ⏱ ${ago}`,
   boundTag: " 📌 bound",
   defaultTag: " 📥 default",
   monitoringTag: " 👀",

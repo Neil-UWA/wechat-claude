@@ -107,6 +107,7 @@ describe("checkForUpdate", () => {
     expect(JSON.parse(readFileSync(cacheFile("fresh"), "utf-8"))).toEqual({
       checkedAt: 1000,
       latest: "1.3.0",
+      attemptedAt: 1000,
     });
   });
 
@@ -155,6 +156,62 @@ describe("checkForUpdate", () => {
       fetchLatest: async () => undefined,
     });
     expect(r).toEqual({ current: "1.2.0", latest: "1.4.0", updateAvailable: true });
+  });
+
+  it("does not retry a failed check until the retry window has passed", async () => {
+    let calls = 0;
+    const failing = async (): Promise<string | undefined> => {
+      calls += 1;
+      return undefined;
+    };
+    const file = cacheFile("backoff");
+    await checkForUpdate({ current: "1.2.0", now: 1000, cacheFile: file, fetchLatest: failing });
+    await checkForUpdate({ current: "1.2.0", now: 2000, cacheFile: file, fetchLatest: failing });
+    expect(calls).toBe(1);
+    // Past the retry window it asks again.
+    await checkForUpdate({
+      current: "1.2.0",
+      now: 1000 + 31 * 60_000,
+      cacheFile: file,
+      retryMs: 30 * 60_000,
+      fetchLatest: failing,
+    });
+    expect(calls).toBe(2);
+  });
+
+  it("a failed attempt keeps the previous good answer and its timestamp", async () => {
+    const file = cacheFile("keep");
+    writeFileSync(file, JSON.stringify({ checkedAt: 5, latest: "1.5.0" }));
+    const r = await checkForUpdate({
+      current: "1.2.0",
+      now: 10 * 3_600_000,
+      cacheFile: file,
+      fetchLatest: async () => undefined,
+    });
+    expect(r.latest).toBe("1.5.0");
+    const cache = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
+    expect(cache.latest).toBe("1.5.0");
+    expect(cache.checkedAt).toBe(5);
+    expect(cache.attemptedAt).toBe(10 * 3_600_000);
+  });
+
+  it("coalesces concurrent checks into one registry request", async () => {
+    let calls = 0;
+    let release: (v: string) => void = () => {};
+    const slow = (): Promise<string | undefined> => {
+      calls += 1;
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    };
+    const file = cacheFile("coalesce");
+    const a = checkForUpdate({ current: "1.2.0", now: 1, cacheFile: file, fetchLatest: slow });
+    const b = checkForUpdate({ current: "1.2.0", now: 1, cacheFile: file, fetchLatest: slow });
+    release("1.9.0");
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(calls).toBe(1);
+    expect(ra.latest).toBe("1.9.0");
+    expect(rb.latest).toBe("1.9.0");
   });
 
   it("reports no update, and no latest, when nothing is known at all", async () => {

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { claudeRecordsForSessions } from "./claude-sessions.js";
 import { isMonitoring } from "./monitoring.js";
 import { INBOX_DIR, SESSIONS_DIR, isProcessAlive } from "./paths.js";
 import { assignSessionNumbers } from "./session-numbers.js";
@@ -71,24 +72,39 @@ export function findNameConflict(
   );
 }
 
+// Current Claude Code names by WeChat session id, from Claude Code's own
+// registry. Selectors resolve against these (what /ls and wechat_status just
+// showed), falling back to the name stored in the session file when the
+// registry can't be read.
+export type LiveClaudeNames = Map<string, { name: string }>;
+
+function claudeNameOf(s: SessionInfo, live: LiveClaudeNames): string | undefined {
+  return live.get(s.id)?.name ?? s.claudeName;
+}
+
 // Names a selector may match, WeChat routing name first. The Claude Code name
 // is accepted as an alias so whichever name the user saw in wechat_status
 // works in `/s <name> <msg>`.
-function namesOf(s: SessionInfo): string[] {
-  return s.claudeName ? [s.name, s.claudeName] : [s.name];
+function namesOf(s: SessionInfo, live: LiveClaudeNames): string[] {
+  const claude = claudeNameOf(s, live);
+  return claude ? [s.name, claude] : [s.name];
 }
 
-function matchesFuzzy(s: SessionInfo, lower: string): boolean {
-  return namesOf(s).some((n) => n.toLowerCase().includes(lower));
+function matchesFuzzy(s: SessionInfo, lower: string, live: LiveClaudeNames): boolean {
+  return namesOf(s, live).some((n) => n.toLowerCase().includes(lower));
 }
 
 // Sessions whose name equals the selector: routing names first, and only if
 // none matches, Claude Code aliases — so an alias can never shadow a session
 // that actually goes by that routing name.
-function exactMatches(sessions: SessionInfo[], lower: string): SessionInfo[] {
+function exactMatches(
+  sessions: SessionInfo[],
+  lower: string,
+  live: LiveClaudeNames
+): SessionInfo[] {
   const byName = sessions.filter((s) => s.name.toLowerCase() === lower);
   if (byName.length > 0) return byName;
-  return sessions.filter((s) => s.claudeName?.toLowerCase() === lower);
+  return sessions.filter((s) => claudeNameOf(s, live)?.toLowerCase() === lower);
 }
 
 // Derive a human-friendly session name from a working directory:
@@ -185,8 +201,12 @@ export function getDefaultTarget(
 
 // Resolve a selector (stable number, pid, exact name, or fuzzy substring) to a
 // single session. On an ambiguous name, prefer monitored then most-recent.
-export function findSession(selector: string): SessionInfo | undefined {
+export function findSession(
+  selector: string,
+  liveNames?: LiveClaudeNames
+): SessionInfo | undefined {
   const sessions = sortedSessions();
+  const live = liveNames ?? claudeRecordsForSessions(sessions);
   const num = parseInt(selector, 10);
   if (!isNaN(num) && String(num) === selector) {
     const numbers = assignSessionNumbers(sessions.map((s) => s.id));
@@ -196,9 +216,11 @@ export function findSession(selector: string): SessionInfo | undefined {
   const byPid = sessions.find((s) => String(s.pid) === selector);
   if (byPid) return byPid;
   const lower = selector.toLowerCase();
-  const exact = exactMatches(sessions, lower);
+  const exact = exactMatches(sessions, lower, live);
   const pool =
-    exact.length > 0 ? exact : sessions.filter((s) => matchesFuzzy(s, lower));
+    exact.length > 0
+      ? exact
+      : sessions.filter((s) => matchesFuzzy(s, lower, live));
   if (pool.length === 0) return undefined;
   if (pool.length === 1) return pool[0];
   const monitored = pool.filter((s) => isMonitoring(s.id));
@@ -208,8 +230,12 @@ export function findSession(selector: string): SessionInfo | undefined {
 
 // All sessions matching a selector (number and pid are unique; a name can
 // match several) — used by /close for batch operations.
-export function matchSessions(selector: string): SessionInfo[] {
+export function matchSessions(
+  selector: string,
+  liveNames?: LiveClaudeNames
+): SessionInfo[] {
   const sessions = sortedSessions();
+  const live = liveNames ?? claudeRecordsForSessions(sessions);
   const num = parseInt(selector, 10);
   if (!isNaN(num) && String(num) === selector) {
     const numbers = assignSessionNumbers(sessions.map((s) => s.id));
@@ -219,9 +245,9 @@ export function matchSessions(selector: string): SessionInfo[] {
   const byPid = sessions.filter((s) => String(s.pid) === selector);
   if (byPid.length > 0) return byPid;
   const lower = selector.toLowerCase();
-  const exact = exactMatches(sessions, lower);
+  const exact = exactMatches(sessions, lower, live);
   if (exact.length > 0) return exact;
-  return sessions.filter((s) => matchesFuzzy(s, lower));
+  return sessions.filter((s) => matchesFuzzy(s, lower, live));
 }
 
 // Display label; appends #pid when the name is shared by multiple sessions.

@@ -152,6 +152,15 @@ describe("findSession", () => {
     expect(findSession("integration")?.id).toBe("x");
   });
 
+  it("prefers the live Claude Code name over the one stored in the session file", () => {
+    // Claude Code renamed the session after its MCP server last wrote the file.
+    fake("x", "review", ALIVE, Date.now(), "old-name-11");
+    const live = new Map([["x", { name: "new-name-22" }]]);
+    expect(findSession("new-name-22", live)?.id).toBe("x");
+    expect(findSession("old-name-11", live)).toBeUndefined();
+    expect(matchSessions("new-name-22", live).map((s) => s.id)).toEqual(["x"]);
+  });
+
   it("does not let a Claude Code alias shadow an exact WeChat routing name", () => {
     fake("x", "review", ALIVE, Date.now(), "backend-12");
     fake("y", "backend-12", ALIVE2, Date.now(), "other-34");

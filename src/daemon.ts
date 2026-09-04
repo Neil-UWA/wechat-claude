@@ -944,8 +944,23 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   if (listMatch) {
     const showAll = listMatch[1] !== undefined;
     const sessions = sortedSessions();
+    // The version footer and the update notice need the registry (cached,
+    // bounded by a short timeout, never throws), so the reply goes out once
+    // that settles rather than making the listing synchronous. Every /ls
+    // reply carries it, including the "no sessions" one.
+    const sendWithVersionFooter = (sections: string[]): void => {
+      void checkForUpdate().then((update) => {
+        // Only x.y.z: a dev build's "-dev.<branch>.<run>.<sha>" tail means
+        // nothing to someone reading it on their phone.
+        sections.push(m.versionLine(parseVersion(update.current).base));
+        if (update.updateAvailable && update.latest) {
+          sections.push(m.updateAvailable(update.current, update.latest));
+        }
+        sendReply(sections.join("\n\n"));
+      });
+    };
     if (sessions.length === 0) {
-      sendReply(m.noSessions);
+      sendWithVersionFooter([m.noSessions]);
       return;
     }
     const defaultTarget = getDefaultTarget(sessions);
@@ -964,6 +979,15 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     // directory it is really in now (a worktree it entered after the MCP
     // server started). Same-named sessions are indistinguishable without it.
     const claude = claudeRecordsForSessions(sessions);
+    // The live registry record wins over what the session file stored: Claude
+    // Code can rename a session after its MCP server last wrote the file.
+    const describe = (s: SessionInfo): { dir: string; claude: string | undefined } => {
+      const rec = claude.get(s.id);
+      return {
+        dir: cwdLabel(rec?.cwd ?? s.cwd),
+        claude: rec?.name ?? s.claudeName,
+      };
+    };
     const mainLines = entries
       .filter(({ s }) => !isIdle(s))
       .map(({ s, num }) => {
@@ -971,43 +995,42 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
         const tags =
           (isMonitoring(s.id) ? m.monitoringTag : "") +
           (s.id === receiverId ? (bound ? m.boundTag : m.defaultTag) : "");
-        const rec = claude.get(s.id);
+        const d = describe(s);
         return m.sessionEntry(
           active,
           num,
           sessionLabel(s, sessions),
           tags,
-          cwdLabel(rec?.cwd ?? s.cwd),
+          d.dir,
           formatAgo(now - s.lastActive, lang),
-          rec?.name ?? s.claudeName
+          d.claude
         );
       });
+    // Idle rows carry the same discriminators: two idle sessions with one name
+    // are exactly the case where "which one do I /close?" comes up.
     const idleLines = entries
       .filter(({ s }) => isIdle(s))
-      .map(({ s, num }) =>
-        m.idleEntry(num, sessionLabel(s, sessions), formatAgo(now - s.lastActive, lang))
-      );
-    const sections = [
-      m.sessionsHeader(sessions.length),
-      mainLines.join("\n\n"),
-      idleLines.length > 0 ? m.idleSection(idleLines.join("\n")) : "",
-      // WeChat collapses single newlines, so the legend is two paragraphs:
-      // what the symbols mean, then how to reply.
-      [bound ? m.legendBound : m.legendDefault, m.legendNumbers].join("\n"),
-      m.legendRoute,
-    ].filter(Boolean);
-    // The version footer and the update notice need the registry (cached,
-    // bounded by a short timeout, never throws), so the reply goes out once
-    // that settles rather than making the listing synchronous.
-    void checkForUpdate().then((update) => {
-      // Only x.y.z: a dev build's "-dev.<branch>.<run>.<sha>" tail means
-      // nothing to someone reading it on their phone.
-      sections.push(m.versionLine(parseVersion(update.current).base));
-      if (update.updateAvailable && update.latest) {
-        sections.push(m.updateAvailable(update.current, update.latest));
-      }
-      sendReply(sections.join("\n\n"));
-    });
+      .map(({ s, num }) => {
+        const d = describe(s);
+        return m.idleEntry(
+          num,
+          sessionLabel(s, sessions),
+          formatAgo(now - s.lastActive, lang),
+          d.dir,
+          d.claude
+        );
+      });
+    sendWithVersionFooter(
+      [
+        m.sessionsHeader(sessions.length),
+        mainLines.join("\n\n"),
+        idleLines.length > 0 ? m.idleSection(idleLines.join("\n")) : "",
+        // WeChat collapses single newlines, so the legend is two paragraphs:
+        // what the symbols mean, then how to reply.
+        [bound ? m.legendBound : m.legendDefault, m.legendNumbers].join("\n"),
+        m.legendRoute,
+      ].filter(Boolean)
+    );
     return;
   }
 
