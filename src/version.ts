@@ -24,22 +24,9 @@ export function readPkgVersion(root: string = PKG_ROOT): string {
 
 export const PKG_VERSION: string = readPkgVersion();
 
-// The repository URL from package.json "homepage", for linking a dev build to
-// its exact commit. Falls back to the known repo when the field is missing.
-export function readPkgHomepage(root: string = PKG_ROOT): string {
-  try {
-    const raw = fs.readFileSync(path.join(root, "package.json"), "utf-8");
-    const h = (JSON.parse(raw) as { homepage?: unknown }).homepage;
-    if (typeof h === "string" && /^https?:\/\//.test(h)) return h.replace(/\/+$/, "");
-  } catch {}
-  return "https://github.com/Neil-UWA/wechat-claude";
-}
-
-export const PKG_HOMEPAGE: string = readPkgHomepage();
-
-// A version string taken apart for display. Dev builds are produced by the
-// publish workflow as "<base>-dev.<branch-slug>.<run>.<sha>" (the slug is
-// omitted on the dev branch itself); anything else is shown as-is.
+// A version string taken apart so display can show just x.y.z. Dev builds are
+// produced by the publish workflow as "<base>-dev.<branch-slug>.<run>.<sha>"
+// (the slug is omitted on the dev branch itself).
 export type VersionInfo = {
   raw: string;
   base: string;
@@ -62,20 +49,6 @@ export function parseVersion(raw: string): VersionInfo {
   return { raw: v, base: base ? base[1] : v };
 }
 
-// Where to read more about exactly this build: the commit for a dev build,
-// the npm version page for a release.
-export function versionLink(
-  info: VersionInfo,
-  homepage: string = PKG_HOMEPAGE,
-  name: string = PKG_NAME
-): string {
-  if (info.dev) return `${homepage}/commit/${info.dev.sha}`;
-  return `https://www.npmjs.com/package/${name}/v/${info.base}`;
-}
-
-export function packagePageUrl(name: string = PKG_NAME): string {
-  return `https://www.npmjs.com/package/${name}`;
-}
 
 // Numeric compare of the x.y.z part. A prerelease sorts below its own release
 // (1.2.0-dev.3 < 1.2.0), otherwise prerelease text is ignored. Returns

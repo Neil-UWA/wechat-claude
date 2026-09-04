@@ -5,11 +5,8 @@ import path from "node:path";
 import {
   checkForUpdate,
   compareVersions,
-  packagePageUrl,
   parseVersion,
-  readPkgHomepage,
   readPkgVersion,
-  versionLink,
 } from "../version.js";
 
 const dir = mkdtempSync(path.join(tmpdir(), "wc-version-test-"));
@@ -39,7 +36,7 @@ describe("readPkgVersion", () => {
   });
 });
 
-describe("parseVersion / versionLink", () => {
+describe("parseVersion", () => {
   it("takes a branch dev build apart", () => {
     expect(parseVersion("1.2.0-dev.session-naming.10.1e0b17f")).toEqual({
       raw: "1.2.0-dev.session-naming.10.1e0b17f",
@@ -68,29 +65,6 @@ describe("parseVersion / versionLink", () => {
     expect(info.raw).toBe("1.2.0-rc.1");
   });
 
-  it("links a dev build to its commit and a release to its npm page", () => {
-    const dev = parseVersion("1.2.0-dev.session-naming.10.1e0b17f");
-    expect(versionLink(dev, "https://github.com/x/y", "pkg")).toBe(
-      "https://github.com/x/y/commit/1e0b17f"
-    );
-    expect(versionLink(parseVersion("1.2.0"), "https://github.com/x/y", "pkg")).toBe(
-      "https://www.npmjs.com/package/pkg/v/1.2.0"
-    );
-    expect(packagePageUrl("pkg")).toBe("https://www.npmjs.com/package/pkg");
-  });
-
-  it("reads the homepage from package.json and falls back to the known repo", () => {
-    const root = path.join(dir, "home");
-    mkdirSync(root, { recursive: true });
-    writeFileSync(
-      path.join(root, "package.json"),
-      JSON.stringify({ homepage: "https://github.com/a/b/" })
-    );
-    expect(readPkgHomepage(root)).toBe("https://github.com/a/b");
-    expect(readPkgHomepage(path.join(dir, "nope"))).toBe(
-      "https://github.com/Neil-UWA/wechat-claude"
-    );
-  });
 });
 
 describe("compareVersions", () => {
