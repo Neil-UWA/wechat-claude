@@ -43,12 +43,15 @@ import {
   getDefaultTarget,
   listSessions,
   matchSessions,
+  cwdLabel,
   sessionLabel,
   sortedSessions,
 } from "./sessions.js";
 import { peekInbox, writeToInbox } from "./inbox.js";
 import { CLAUDE_CONFIG_FILE, ensureBypassAccepted } from "./claude-config.js";
 import { type Lang, formatAgo, getLang, marker, t } from "./i18n.js";
+import { checkForUpdate } from "./version.js";
+import { claudeRecordsForSessions } from "./claude-sessions.js";
 import {
   hasTmux,
   isSafeSessionName,
@@ -941,8 +944,23 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   if (listMatch) {
     const showAll = listMatch[1] !== undefined;
     const sessions = sortedSessions();
+    // The version footer and the update notice need the registry (cached,
+    // bounded by a short timeout, never throws), so the reply goes out once
+    // that settles rather than making the listing synchronous. Every /ls
+    // reply carries it, including the "no sessions" one.
+    const sendWithVersionFooter = (sections: string[]): void => {
+      void checkForUpdate().then((update) => {
+        // The full version string, dev suffix included, so a test build can
+        // be told from a release and from another test build.
+        sections.push(m.versionLine(update.current));
+        if (update.updateAvailable && update.latest) {
+          sections.push(m.updateAvailable(update.current, update.latest));
+        }
+        sendReply(sections.join("\n\n"));
+      });
+    };
     if (sessions.length === 0) {
-      sendReply(m.noSessions);
+      sendWithVersionFooter([m.noSessions]);
       return;
     }
     const defaultTarget = getDefaultTarget(sessions);
@@ -957,38 +975,62 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
       s.id !== receiverId &&
       now - s.lastActive >= IDLE_MS;
     const entries = sessions.map((s) => ({ s, num: numbers[s.id] }));
-    const mainLines = entries
-      .filter(({ s }) => !isIdle(s))
-      .map(({ s, num }) => {
-        const active = now - s.lastActive < 120_000 ? "●" : "○";
-        const tags =
-          (isMonitoring(s.id) ? m.monitoringTag : "") +
-          (s.id === receiverId ? (bound ? m.boundTag : m.defaultTag) : "");
-        return m.sessionEntry(
-          active,
-          num,
-          sessionLabel(s, sessions),
-          tags,
-          path.basename(s.cwd),
-          formatAgo(now - s.lastActive, lang)
-        );
-      });
-    const idleLines = entries
-      .filter(({ s }) => isIdle(s))
-      .map(({ s, num }) =>
-        m.idleEntry(num, sessionLabel(s, sessions), formatAgo(now - s.lastActive, lang))
+    // Claude Code's own view of each session: its cross-session name, and the
+    // directory it is really in now (a worktree it entered after the MCP
+    // server started). Same-named sessions are indistinguishable without it.
+    const claude = claudeRecordsForSessions(sessions);
+    // The live registry record wins over what the session file stored: Claude
+    // Code can rename a session after its MCP server last wrote the file.
+    const describe = (s: SessionInfo): { dir: string; claude: string | undefined } => {
+      const rec = claude.get(s.id);
+      return {
+        dir: cwdLabel(rec?.cwd ?? s.cwd),
+        claude: rec?.name ?? s.claudeName,
+      };
+    };
+    // The leading glyph: the receiver of plain messages gets 📌 (bound) or 📥
+    // (default), so "where do my messages go" is answered in the left margin;
+    // every other row shows recent activity as ●/○.
+    const receiverKind = bound ? "bound" : "default";
+    const slot = (s: SessionInfo): string =>
+      s.id === receiverId
+        ? m.receiverSlot(receiverKind)
+        : now - s.lastActive < 120_000
+          ? "●"
+          : "○";
+    const row = (s: SessionInfo, num: number): string => {
+      const d = describe(s);
+      return m.sessionEntry(
+        slot(s),
+        num,
+        // Same-named sessions: "(claude-name)" in place of the old "#pid".
+        sessionLabel(s, sessions, d.claude),
+        isMonitoring(s.id) ? m.monitoringTag : "",
+        d.dir,
+        formatAgo(now - s.lastActive, lang)
       );
-    const sections = [
-      m.sessionsHeader(sessions.length),
-      mainLines.join("\n\n"),
-      idleLines.length > 0 ? m.idleSection(idleLines.join("\n")) : "",
+    };
+    const mainLines = entries.filter(({ s }) => !isIdle(s)).map(({ s, num }) => row(s, num));
+    const idleLines = entries.filter(({ s }) => isIdle(s)).map(({ s, num }) => row(s, num));
+    // The sample "/s <n>" cites a number that is really listed — preferably
+    // one you would actually send to, i.e. not the receiver plain messages
+    // already reach.
+    const example =
+      entries.find(({ s }) => !isIdle(s) && s.id !== receiverId)?.num ??
+      entries.find(({ s }) => !isIdle(s))?.num ??
+      entries[0]?.num ??
+      1;
+    sendWithVersionFooter(
       [
-        bound ? m.legendBound : m.legendDefault,
-        m.legendNumbers,
-        m.legendRoute,
-      ].join("\n"),
-    ].filter(Boolean);
-    sendReply(sections.join("\n\n"));
+        m.sessionsHeader(mainLines.length),
+        mainLines.join("\n\n"),
+        idleLines.length > 0 ? m.idleSection(idleLines.length, idleLines.join("\n\n")) : "",
+        // Two legend lines: the receiver glyph, and how to send. Everything
+        // else (numbers are stable, ●/○, the parenthesised Claude name) is
+        // in /help.
+        receiverId ? [m.legendReceiver(receiverKind), m.legendRoute(example)].join("\n") : m.legendRoute(example),
+      ].filter(Boolean)
+    );
     return;
   }
 

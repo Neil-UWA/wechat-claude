@@ -56,7 +56,7 @@ wechat-claude daemon           # run it in the foreground / your own supervisor
 
 Finally, type `/wechat` in any Claude Code session. That starts a persistent
 watcher (`dist/watch-inbox.js`) that reacts to messages instantly via
-`fs.watch` and marks the session `[monitoring]`. The daemon also auto-starts on
+`fs.watch` and marks the session `👀 monitoring`. The daemon also auto-starts on
 `/wechat` and after a successful login if it isn't already running (it's a
 singleton, guarded by a pid file).
 
@@ -76,7 +76,7 @@ Send these from WeChat to control routing:
 
 | Command | Description |
 |---------|-------------|
-| `/sessions` or `/ls` | List active Claude Code sessions (`[监控中]` = actively monitoring) |
+| `/sessions` or `/ls` | List active Claude Code sessions (`👀` = monitoring, actively reading messages; `📌 bound` = your messages go here; `📥 default` = plain messages go here). Two lines per entry: `📌 5. fintary:main (fintary-69) 👀` and `dir: fintary/data-sync-field-mapping · active 3h ago`. The leading glyph is 📌 (bound) or 📥 (default receiver) on the one row plain messages go to, and ●/○ (active in the last 2 min or not) elsewhere, so "where do my messages land" reads from the left column; same-named sessions carry the Claude Code cross-session name in parentheses; the directory is where Claude currently is (a worktree as `repo/worktree`). Idle sessions follow under `Idle (N):`. Two legend lines under the list: what the receiver glyph means, and how to `/s` (the example uses a number that is actually listed). Ends with a labelled version paragraph, `📦 Running version: wechat-claude @ v1.2.0`; a dev build shows its full version (e.g. `v1.2.0-dev.session-naming.12.2f0809f`) so test builds can be told apart. When npm has a newer `latest`, an upgrade notice follows (npm is asked at most every 6 hours; the last answer is reused if it can't be reached, and a failed attempt is not retried for 30 minutes) |
 | `/s <number> <message>` | Send message to session by its number. Numbers are stable for a session's lifetime — they never shift when other sessions open or close (retired numbers aren't reused; numbering resets once all sessions are gone) |
 | `/use <number\|name\|pid>` | Bind your chat to one session: every plain message goes straight to it (survives daemon restarts). `/use off` unbinds; `/use` shows the current binding. Closing the bound session clears the binding automatically |
 | `/s <name> <message>` | Send message to session by name (fuzzy match; if ambiguous, prefers the monitored / most recently active one) |
@@ -177,7 +177,28 @@ Sessions are automatically named based on the working directory:
 - Worktree: `reponame/worktree-name` (e.g., `myapp/feature-x`)
 - Non-git: directory name
 
-Use `wechat_set_session_name` to set a custom name.
+To pick a name, pass it when you start monitoring: `/wechat integration`.
+That names the session and starts the watcher in one go; running it again on
+a session that already has that name is a no-op. You can also call
+`wechat_set_session_name` on its own at any time. A name must be a single word
+without whitespace (`/s <name> <msg>` reads one word), must not be purely
+numeric (it would be read as a session number or pid), and must not collide
+with another live session — a collision is refused with the holder's pid
+rather than silently suffixed.
+
+**Two namespaces — don't mix them up.** The names above are **WeChat routing
+names**, used only in `/s <name> <msg>`. Claude Code gives every session its
+own, separate name (e.g. `myapp-a9`), which is what other Claude sessions must
+pass to `SendMessage` (see `ListAgents`). `wechat_status` lists both side by
+side in `Active sessions` (the `SendMessage: ...` column), and `/s` accepts the
+Claude Code name as an alias, so whichever name you saw will route.
+
+That also makes **relaying** possible: a plain message lands in the default or
+bound session, but you may mean another one ("tell integration to run the
+tests"). The receiving session works out the target from the `Active sessions`
+list (routing name, `SendMessage:` name, or working directory), forwards it
+with `SendMessage`, tells you on WeChat which session it went to and how to
+`/s` it directly next time, and relays the reply back.
 
 ## File Layout
 
@@ -194,6 +215,7 @@ Use `wechat_set_session_name` to set a custom name.
 ├── cursor.txt            # message polling cursor
 ├── expired.flag          # present when the WeChat login has expired
 ├── usage-limit.json      # known Claude usage-limit state (incl. notified users)
+├── update-check.json     # last `latest` version seen on npm (for the /ls upgrade notice)
 ├── replies/              # last time each session replied to each WeChat user
 │   └── <pid>--<userId>
 ├── nudge/                # signal to re-announce a backlog (after a limit lifts)
@@ -202,7 +224,7 @@ Use `wechat_set_session_name` to set a custom name.
 │   └── <pid>.json
 ├── inbox/                # per-session message queues
 │   └── <pid>.json
-├── heartbeat/            # watcher heartbeats (session is [monitoring])
+├── heartbeat/            # watcher heartbeats (session is 👀 monitoring)
 │   └── <pid>
 └── typing/               # typing indicator state
     └── <userId>
@@ -246,7 +268,7 @@ server's pid.
    - Commands like `/sessions`, `/run`, `/close`, `/use` are handled by the daemon
    - `/s <target> <msg>` routes to a specific session's inbox
    - A plain message goes to your bound session (`/use`), else the most
-     recently active session that is `[monitoring]`
+     recently active session that is `👀 monitoring`
 3. When a message is routed, the daemon starts a "typing" indicator on WeChat
 4. **MCP Server** reads from its inbox when Claude calls `wechat_get_messages`
 5. Claude processes the message and replies via `wechat_send_text`
@@ -254,6 +276,21 @@ server's pid.
 7. If a message goes unread *and* unanswered for too long, the daemon checks
    whether Claude's usage limit is the cause and explains it on WeChat (see
    [Usage limits](#usage-limits-when-every-session-goes-quiet))
+
+## Reply footer
+
+Every reply a session sends to WeChat (`wechat_send_text`, and the caption of
+`wechat_send_image`) ends with one line saying which session is speaking and
+how to answer it directly:
+
+```
+—— from naming (#4) · reply directly: /s 4 <message>
+```
+
+The number is the stable one from `/ls`, fixed for the session's lifetime. When
+several sessions answer into the same chat you no longer have to `/ls` and guess
+who said what. To turn it off, add `"replyFooter": false` to
+`~/.claude/wechat/config.json`.
 
 ## Language
 
@@ -289,7 +326,7 @@ wechat-claude executes code on your machine in response to chat messages. Read
   parent to `repoDirs` in `~/.claude/wechat/config.json`, pass an absolute
   path, or use `/run . <task>` to run in the default directory.
 - **A message got no response.** Check `wechat-claude daemon status` and
-  `wechat-claude daemon log`. If the target session isn't `[monitoring]`, run
+  `wechat-claude daemon log`. If the target session isn't `👀 monitoring`, run
   `/wechat` in it or bind with `/use <n>`.
 - **`daemon install` did nothing on Linux/Windows.** launchd is macOS-only;
   run the daemon under your own supervisor (`wechat-claude daemon`, systemd,

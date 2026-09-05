@@ -126,23 +126,30 @@ type Msgs = {
   unreadWarn: (name: string) => string;
   // /sessions listing
   sessionsHeader: (count: number) => string;
+  // One session block: a name line and a detail line. slot: the leading glyph
+  // (📌 bound receiver / 📥 default receiver / ●○ recent activity). label: the
+  // routing name, with the Claude Code name in parentheses when two sessions
+  // share a name. tags: trailing state marks (👀 monitoring).
   sessionEntry: (
-    dot: string,
+    slot: string,
     n: number,
     label: string,
     tags: string,
     dir: string,
     ago: string
   ) => string;
-  idleSection: (body: string) => string;
-  idleEntry: (n: number, label: string, ago: string) => string;
-  boundTag: string;
-  defaultTag: string;
+  idleSection: (count: number, body: string) => string;
   monitoringTag: string;
-  legendBound: string;
-  legendDefault: string;
-  legendNumbers: string;
-  legendRoute: string;
+  receiverSlot: (kind: "bound" | "default") => string;
+  // Legend line 1: what the receiver glyph means. Line 2: how to send, with a
+  // number that is actually listed so the sample works when copied.
+  legendReceiver: (kind: "bound" | "default") => string;
+  legendRoute: (example: number) => string;
+  // Labelled "this is the running version" footer, full version string.
+  versionLine: (version: string) => string;
+  updateAvailable: (current: string, latest: string) => string;
+  // trailer on every reply a session sends; n is the stable /ls number
+  replyFooter: (name: string, n: number | undefined) => string;
   noRepoDirs: string;
   // usage limit
   usageLimited: (resetHint: string, waiting: string) => string;
@@ -197,6 +204,7 @@ const zh: Msgs = {
     "📌 备注",
     "· 编号固定不变，可用编号/名字/pid 选 session",
     "· 普通消息发给绑定的 session（没绑定就发给最近活跃且监控中的）",
+    "· /ls 图例：📌 已绑定 · 📥 默认接收 · 👀 正在读取消息 · ● 2 分钟内有动静 · 同名时括号里是 Claude 会话名",
     "· 📷 可以直接发图片，Claude 能看到内容",
     "· 🎤 语音会自动转成文字",
   ].join("\n"),
@@ -261,18 +269,29 @@ const zh: Msgs = {
   unreadWarn: (name) =>
     `提醒: 发给 "${name}" 的消息已 2 分钟未被读取。该 session 可能没有在监控消息。\n发送 /sessions 查看状态，或用 /s <编号> <消息> 换一个 session。`,
   sessionsHeader: (count) => `活跃 sessions (${count}):`,
-  sessionEntry: (dot, n, label, tags, dir, ago) =>
-    `${dot} ${n}. ${label}${tags}\n   目录: ${dir} · ${ago}活跃`,
-  idleSection: (body) =>
-    `闲置（未监控、2 小时以上未活跃）:\n${body}\n可发 /close idle 一键清理`,
-  idleEntry: (n, label, ago) => `○ ${n}. ${label} · ${ago}`,
-  boundTag: " ← 已绑定",
-  defaultTag: " ← 默认接收",
-  monitoringTag: " [监控中]",
-  legendBound: "← 已绑定 = 你的消息都发到这里（/use off 取消）",
-  legendDefault: "← 默认接收 = 不带命令的消息会发到这里（/use <编号> 可固定绑定）",
-  legendNumbers: "编号固定不变 · [监控中] = 正在读取消息",
-  legendRoute: "用 /s <编号|名字|pid> <消息> 发送到指定 session，例: /s 1 你好",
+  // The original two-line block, refined (design "U"): the receiver glyph
+  // takes the leading slot so the eye finds it in the left margin; monitoring
+  // is 👀 on the name line; the detail line shows the directory Claude is
+  // really in. Desktop WeChat collapses the newline to a space; "目录:" still
+  // marks the seam.
+  sessionEntry: (slot, n, label, tags, dir, ago) =>
+    `${slot} ${n}. ${label}${tags}\n目录: ${dir} · ${ago}活跃`,
+  idleSection: (count, body) => `空闲 (${count}):\n\n${body}`,
+  monitoringTag: " 👀",
+  receiverSlot: (kind) => (kind === "bound" ? "📌" : "📥"),
+  legendReceiver: (kind) =>
+    kind === "bound"
+      ? "📌 = 已绑定，你的消息都发到这里（/use off 取消）"
+      : "📥 = 默认接收，不带前缀的消息发到这里（/use <编号> 可固定绑定）",
+  legendRoute: (example) =>
+    `用 /s <编号> <消息> 发到指定 session，例: /s ${example} 你好`,
+  versionLine: (version) => `📦 当前版本：wechat-claude @ v${version}`,
+  updateAvailable: (current, latest) =>
+    `⬆️ 有新版本 v${latest}（当前 v${current}）。在电脑上更新:\nnpm i -g wechat-claude-sessions@latest && wechat-claude daemon restart\n然后在各 Claude Code session 里 /mcp → wechat → Reconnect，再 /wechat 重新挂上。`,
+  replyFooter: (name, n) =>
+    n === undefined
+      ? `—— 来自 ${name} · 直接回复: /s ${name} <消息>`
+      : `—— 来自 ${name}（#${n}）· 直接回复: /s ${n} <消息>`,
   noRepoDirs: "  （无，可在 ~/.claude/wechat/config.json 配置 repoDirs）",
   usageLimited: (resetHint, waiting) =>
     `⚠️ Claude 用量已达上限，所有 session 现在都无法回复（不是掉线，消息已经收到了）。\n\n预计恢复: ${resetHint}\n${waiting}\n\n恢复后我会主动告诉你，并提醒 session 处理积压的消息。期间可以继续发消息，我会存好。\n发送 /usage 可随时查询。`,
@@ -331,6 +350,7 @@ const en: Msgs = {
     "📌 Notes",
     "· Numbers are stable; select by number / name / pid",
     "· Plain messages go to your bound session (else the most recent monitoring one)",
+    "· /ls legend: 📌 bound · 📥 default receiver · 👀 reading messages · ● active in the last 2 min · same-named sessions show the Claude session name in parentheses",
     "· 📷 Send images directly — Claude can see them",
     "· 🎤 Voice is auto-transcribed to text",
   ].join("\n"),
@@ -394,18 +414,24 @@ const en: Msgs = {
   unreadWarn: (name) =>
     `Heads up: your message to "${name}" has been unread for 2 minutes. That session may not be monitoring.\nSend /sessions to check, or /s <number> <message> to pick another.`,
   sessionsHeader: (count) => `Active sessions (${count}):`,
-  sessionEntry: (dot, n, label, tags, dir, ago) =>
-    `${dot} ${n}. ${label}${tags}\n   dir: ${dir} · active ${ago}`,
-  idleSection: (body) =>
-    `Idle (unmonitored, 2h+ inactive):\n${body}\nSend /close idle to clean up`,
-  idleEntry: (n, label, ago) => `○ ${n}. ${label} · ${ago}`,
-  boundTag: " ← bound",
-  defaultTag: " ← default",
-  monitoringTag: " [monitoring]",
-  legendBound: "← bound = your messages go here (/use off to unbind)",
-  legendDefault: "← default = plain messages go here (/use <n> to pin)",
-  legendNumbers: "Numbers are stable · [monitoring] = actively reading messages",
-  legendRoute: "Send to a session with /s <number|name|pid> <message>, e.g. /s 1 hello",
+  sessionEntry: (slot, n, label, tags, dir, ago) =>
+    `${slot} ${n}. ${label}${tags}\ndir: ${dir} · active ${ago}`,
+  idleSection: (count, body) => `Idle (${count}):\n\n${body}`,
+  monitoringTag: " 👀",
+  receiverSlot: (kind) => (kind === "bound" ? "📌" : "📥"),
+  legendReceiver: (kind) =>
+    kind === "bound"
+      ? "📌 = bound, your messages go here (/use off to unbind)"
+      : "📥 = default receiver, plain messages go here (/use <n> to pin)",
+  legendRoute: (example) =>
+    `Send to a session with /s <n> <message>, e.g. /s ${example} hello`,
+  versionLine: (version) => `📦 Running version: wechat-claude @ v${version}`,
+  updateAvailable: (current, latest) =>
+    `⬆️ Update available: v${latest} (you have v${current}). On your computer:\nnpm i -g wechat-claude-sessions@latest && wechat-claude daemon restart\nthen in each Claude Code session: /mcp → wechat → Reconnect, and /wechat again.`,
+  replyFooter: (name, n) =>
+    n === undefined
+      ? `—— from ${name} · reply directly: /s ${name} <message>`
+      : `—— from ${name} (#${n}) · reply directly: /s ${n} <message>`,
   noRepoDirs: "  (none — configure repoDirs in ~/.claude/wechat/config.json)",
   usageLimited: (resetHint, waiting) =>
     `⚠️ Claude's usage limit is reached — no session can reply right now (nothing crashed; your message did arrive).\n\nExpected reset: ${resetHint}\n${waiting}\n\nI'll tell you as soon as it lifts and nudge the sessions to handle what piled up. Keep sending — messages are kept.\nSend /usage to check any time.`,

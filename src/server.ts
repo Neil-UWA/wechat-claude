@@ -6,11 +6,17 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import {
+  type ClaudeSessionRecord,
+  claudeRecordsForSessions,
+  ownClaudeSessionName,
+} from "./claude-sessions.js";
 import { ILinkClient } from "./ilink.js";
-import { PKG_ROOT } from "./pkg-root.js";
+import { PKG_VERSION } from "./version.js";
 import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js";
 import { isMonitoring, touchHeartbeat } from "./monitoring.js";
 import { markReplied } from "./replies.js";
+import { replyFooter, withReplyFooter } from "./reply-footer.js";
 import { routingLines } from "./routing.js";
 import { transcriptPath } from "./transcripts.js";
 import { readUsageState, resetHint } from "./usage.js";
@@ -25,24 +31,17 @@ import {
 } from "./paths.js";
 import {
   type SessionInfo,
+  cwdLabel,
   detectSessionName as detectSessionNameFor,
+  findNameConflict,
   listSessions,
+  validateSessionName,
   writeSessionFile,
 } from "./sessions.js";
 
 const DAEMON_LOG_FILE = path.join(WECHAT_DIR, "daemon.log");
 const DAEMON_PATH = fileURLToPath(new URL("./daemon.js", import.meta.url));
 
-// Report the installed package's version rather than a hardcoded one that
-// drifts from package.json. npm always ships package.json, `files` or not.
-const PKG_VERSION: string = (() => {
-  try {
-    const raw = fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf-8");
-    return (JSON.parse(raw) as { version?: string }).version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-})();
 const WATCHER_PATH = fileURLToPath(new URL("./watch-inbox.js", import.meta.url));
 
 function ensureDirs(): void {
@@ -101,6 +100,18 @@ const sessionId = String(process.pid);
 const sessionName = { value: detectSessionName() };
 const client = new ILinkClient();
 
+// A session's Claude Code name for display: the live registry record (found
+// through its MCP server's parent process) first, since Claude Code can rename
+// a session after its session file was last written; the stored name only as
+// a fallback (e.g. `ps` unavailable). Never guessed: a wrong name here is
+// worse than "unknown", because an agent will act on it.
+function claudeNameLabel(
+  s: SessionInfo,
+  records: Map<string, ClaudeSessionRecord>
+): string {
+  return records.get(s.id)?.name ?? s.claudeName ?? "unknown";
+}
+
 function currentSessionInfo(): SessionInfo {
   // Claude Code passes its own session id to MCP servers; it is the transcript
   // file's name, which is how the daemon can watch this exact session for
@@ -115,6 +126,8 @@ function currentSessionInfo(): SessionInfo {
     transcript: claudeSessionId
       ? transcriptPath(process.cwd(), claudeSessionId)
       : undefined,
+    // Re-read each time: Claude Code can rename its session after we start.
+    claudeName: ownClaudeSessionName(process.ppid),
   };
 }
 
@@ -290,7 +303,7 @@ server.tool(
 
 server.tool(
   "wechat_send_text",
-  "Send a text message to a WeChat user.",
+  "Send a text message to a WeChat user. A one-line trailer naming this session and its '/s <n>' reply command is appended automatically (config.json \"replyFooter\": false disables it) — do not add your own.",
   {
     to_user_id: z.string().describe("User ID (e.g. 'xxx@im.wechat')"),
     text: z.string().describe("Text message to send"),
@@ -304,7 +317,10 @@ server.tool(
     }
     try {
       clearTyping(to_user_id);
-      await client.sendText(to_user_id, text);
+      await client.sendText(
+        to_user_id,
+        withReplyFooter(text, replyFooter(sessionId, sessionName.value))
+      );
       // Tells the daemon this session actually answered, so its silence
       // watchdog (usage-limit detection) stops tracking the delivery.
       markReplied(sessionId, to_user_id);
@@ -330,7 +346,7 @@ server.tool(
 
 server.tool(
   "wechat_send_image",
-  "Send an image file to a WeChat user.",
+  "Send an image file to a WeChat user. The session trailer (see wechat_send_text) is appended to the caption, or sent as the caption when none is given.",
   {
     to_user_id: z.string().describe("User ID (e.g. 'xxx@im.wechat')"),
     file_path: z.string().describe("Absolute path to the image file"),
@@ -352,7 +368,16 @@ server.tool(
         };
       }
       clearTyping(to_user_id);
-      await client.sendImage(to_user_id, file_path, caption);
+      const footer = replyFooter(sessionId, sessionName.value);
+      const fullCaption = caption
+        ? withReplyFooter(caption, footer)
+        : footer || undefined;
+      // The caption goes through sendText, which splits at the API's text
+      // limit; sendImage sends its caption as a single item and would fail
+      // once the footer pushed a long caption over that limit. Same order as
+      // sendImage's own caption handling: text first, then the image.
+      if (fullCaption) await client.sendText(to_user_id, fullCaption);
+      await client.sendImage(to_user_id, file_path);
       markReplied(sessionId, to_user_id);
       await client.sendTyping(to_user_id, false);
       return {
@@ -376,14 +401,59 @@ server.tool(
 
 server.tool(
   "wechat_set_session_name",
-  "Set a name for this session for WeChat routing ('/s <name> <msg>').",
-  { name: z.string().describe("Session name (e.g. 'backend', 'review')") },
-  async ({ name }) => {
+  "Set this session's WeChat routing name (used in '/s <name> <msg>' from WeChat). This is NOT the Claude Code session name that SendMessage/ListAgents use; wechat_status shows both. Rejects whitespace, purely numeric names, and names another live session already holds. Setting the current name again is a no-op.",
+  {
+    name: z
+      .string()
+      .describe(
+        "Routing name, one word without spaces (e.g. 'backend', 'review', 'integration')"
+      ),
+  },
+  async ({ name: raw }) => {
+    const checked = validateSessionName(raw);
+    if (!checked.ok) {
+      const hint = checked.suggestion
+        ? ` Try "${checked.suggestion}" instead.`
+        : "";
+      return {
+        content: [{ type: "text", text: `${checked.reason}${hint}` }],
+        isError: true,
+      };
+    }
+    const name = checked.name;
+    if (name === sessionName.value) {
+      touchActive();
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Session name is already "${name}" — nothing changed. Route: /s ${name} <msg>`,
+          },
+        ],
+      };
+    }
+    const holder = findNameConflict(name, sessionId);
+    if (holder) {
+      const theirs = `, Claude Code name: ${claudeNameLabel(holder, claudeRecordsForSessions([holder]))}`;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Name "${name}" is already used by another live session (pid: ${holder.pid}${theirs}, cwd: ${holder.cwd}). Session name unchanged ("${sessionName.value}"). Pick a different name, or close that session first (/close ${holder.pid} in WeChat).`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    const previous = sessionName.value;
     sessionName.value = name;
     register();
     return {
       content: [
-        { type: "text", text: `Session name: "${name}". Route: /s ${name} <msg>` },
+        {
+          type: "text",
+          text: `Session name: "${name}" (was "${previous}"). Route from WeChat: /s ${name} <msg>`,
+        },
       ],
     };
   }
@@ -395,13 +465,23 @@ server.tool(
   {},
   async () => {
     const daemon = await ensureDaemonRunning();
+    // Running /wechat is the user turning their attention to this session, so
+    // it should become the default target for plain messages once its watcher
+    // is up (the default is the most recently active monitored session).
+    touchActive();
     const sessions = listSessions();
     const inboxCount = peekInbox();
     const monitoring = isMonitoring(sessionId);
+    const ownClaudeName = ownClaudeSessionName(process.ppid);
+    // Every live session's Claude Code record, in one `ps` call: the current
+    // cross-session name and the directory Claude is really in now.
+    const records = claudeRecordsForSessions(sessions);
     const lines = [
+      `wechat-claude v${PKG_VERSION}`,
       `Logged in: ${client.isLoggedIn}`,
       `Daemon running: ${daemon.running}${daemon.autoStarted ? " (auto-started just now)" : ""}`,
-      `Session: ${sessionName.value} (id: ${sessionId})`,
+      `Session: ${sessionName.value} (id: ${sessionId})  ·  WeChat routing name, use in "/s ${sessionName.value} <msg>"`,
+      `Claude Code session name: ${ownClaudeName ?? "unknown"}  ·  what other Claude sessions pass to SendMessage; see ListAgents`,
       `Inbox: ${inboxCount} message(s)`,
       `Watcher: ${monitoring ? "active — this session is monitoring messages" : "NOT active — messages routed here will sit unread"}`,
       ...routingLines(sessionId),
@@ -409,8 +489,12 @@ server.tool(
       ...sessions.map((s) => {
         const active = Date.now() - s.lastActive < 120_000 ? "●" : "○";
         const mon = isMonitoring(s.id) ? " [monitoring]" : "";
-        return `  ${active} ${s.name} (pid: ${s.pid})${mon}`;
+        const self = s.id === sessionId ? " (this session)" : "";
+        const dir = `  ·  dir: ${cwdLabel(records.get(s.id)?.cwd ?? s.cwd)}`;
+        const claude = `  ·  SendMessage: ${claudeNameLabel(s, records)}`;
+        return `  ${active} ${s.name} (pid: ${s.pid})${mon}${self}${dir}${claude}`;
       }),
+      `  (Names before "(pid" are WeChat routing names for "/s <name> <msg>" — they are NOT Claude Code session names. To message a session with SendMessage, use the name after "SendMessage:", or ListAgents. Either name works as the /s selector. "dir:" is the directory that session's Claude is currently in, worktrees as repo/worktree.)`,
     ];
     // The daemon records this; a session that was rate-limited comes back with
     // no idea why it went quiet, and the user is owed an explanation.
