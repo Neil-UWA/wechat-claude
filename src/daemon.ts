@@ -988,47 +988,47 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
         claude: rec?.name ?? s.claudeName,
       };
     };
-    const mainLines = entries
-      .filter(({ s }) => !isIdle(s))
-      .map(({ s, num }) => {
-        const tags =
-          (isMonitoring(s.id) ? m.monitoringTag : "") +
-          (s.id === receiverId ? (bound ? m.boundTag : m.defaultTag) : "");
-        const d = describe(s);
-        return m.sessionEntry(
-          num,
-          sessionLabel(s, sessions),
-          tags,
-          d.dir,
-          formatAgo(now - s.lastActive, lang),
-          d.claude
-        );
-      });
-    // Idle rows carry the same discriminators: two idle sessions with one name
-    // are exactly the case where "which one do I /close?" comes up.
-    const idleLines = entries
-      .filter(({ s }) => isIdle(s))
-      .map(({ s, num }) => {
-        const d = describe(s);
-        return m.idleEntry(
-          num,
-          sessionLabel(s, sessions),
-          formatAgo(now - s.lastActive, lang),
-          d.dir,
-          d.claude
-        );
-      });
-    // The sample "/s <n>" in the legend uses a number that is really listed,
-    // preferably the first non-idle one.
+    // The leading glyph: the receiver of plain messages gets 📌 (bound) or 📥
+    // (default), so "where do my messages go" is answered in the left margin;
+    // every other row shows recent activity as ●/○.
+    const receiverKind = bound ? "bound" : "default";
+    const slot = (s: SessionInfo): string =>
+      s.id === receiverId
+        ? m.receiverSlot(receiverKind)
+        : now - s.lastActive < 120_000
+          ? "●"
+          : "○";
+    const row = (s: SessionInfo, num: number): string => {
+      const d = describe(s);
+      return m.sessionEntry(
+        slot(s),
+        num,
+        // Same-named sessions: "(claude-name)" in place of the old "#pid".
+        sessionLabel(s, sessions, d.claude),
+        isMonitoring(s.id) ? m.monitoringTag : "",
+        d.dir,
+        formatAgo(now - s.lastActive, lang)
+      );
+    };
+    const mainLines = entries.filter(({ s }) => !isIdle(s)).map(({ s, num }) => row(s, num));
+    const idleLines = entries.filter(({ s }) => isIdle(s)).map(({ s, num }) => row(s, num));
+    // The sample "/s <n>" cites a number that is really listed — preferably
+    // one you would actually send to, i.e. not the receiver plain messages
+    // already reach.
     const example =
-      entries.find(({ s }) => !isIdle(s))?.num ?? entries[0]?.num ?? 1;
+      entries.find(({ s }) => !isIdle(s) && s.id !== receiverId)?.num ??
+      entries.find(({ s }) => !isIdle(s))?.num ??
+      entries[0]?.num ??
+      1;
     sendWithVersionFooter(
       [
-        m.sessionsHeader(sessions.length),
+        m.sessionsHeader(mainLines.length),
         mainLines.join("\n\n"),
-        idleLines.length > 0 ? m.idleSection(idleLines.join("\n\n")) : "",
-        // No legend here (it is in /help): on a phone it doubled the length.
-        m.legendRoute(example),
+        idleLines.length > 0 ? m.idleSection(idleLines.length, idleLines.join("\n\n")) : "",
+        // Two legend lines: the receiver glyph, and how to send. Everything
+        // else (numbers are stable, ●/○, the parenthesised Claude name) is
+        // in /help.
+        receiverId ? [m.legendReceiver(receiverKind), m.legendRoute(example)].join("\n") : m.legendRoute(example),
       ].filter(Boolean)
     );
     return;

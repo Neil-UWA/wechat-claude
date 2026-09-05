@@ -245,11 +245,23 @@ describe("cwdLabel", () => {
 });
 
 describe("sessionLabel", () => {
-  it("appends #pid only for duplicate names", () => {
+  it("appends #pid only for duplicate names when no Claude name is known", () => {
     const a = { id: "x", name: "twin", cwd: "/", pid: 1, lastActive: 0 };
     const b = { id: "y", name: "twin", cwd: "/", pid: 2, lastActive: 0 };
     const c = { id: "z", name: "solo", cwd: "/", pid: 3, lastActive: 0 };
     expect(sessionLabel(a, [a, b, c])).toBe("twin#1");
     expect(sessionLabel(c, [a, b, c])).toBe("solo");
+  });
+
+  it("prefers the Claude Code name in parentheses to disambiguate", () => {
+    const a = { id: "x", name: "fintary:main", cwd: "/", pid: 1, lastActive: 0, claudeName: "fintary-69" };
+    const b = { id: "y", name: "fintary:main", cwd: "/", pid: 2, lastActive: 0 };
+    expect(sessionLabel(a, [a, b])).toBe("fintary:main (fintary-69)");
+    // A live registry name passed explicitly wins over the stored one.
+    expect(sessionLabel(a, [a, b], "fintary-70")).toBe("fintary:main (fintary-70)");
+    // Unknown Claude name: fall back to the pid.
+    expect(sessionLabel(b, [a, b])).toBe("fintary:main#2");
+    // Unique names never get a suffix, even with a Claude name.
+    expect(sessionLabel(a, [a], "fintary-69")).toBe("fintary:main");
   });
 });

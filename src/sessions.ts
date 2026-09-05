@@ -250,8 +250,15 @@ export function matchSessions(
   return sessions.filter((s) => matchesFuzzy(s, lower, live));
 }
 
-// Display label; appends #pid when the name is shared by multiple sessions.
-export function sessionLabel(s: SessionInfo, all: SessionInfo[]): string {
+// Display label. When several sessions share the name, disambiguate with the
+// Claude Code cross-session name in parentheses — a name the user recognises
+// from their terminal — falling back to #pid when that name is unknown.
+export function sessionLabel(
+  s: SessionInfo,
+  all: SessionInfo[],
+  claudeName: string | undefined = s.claudeName
+): string {
   const dup = all.filter((o) => o.name === s.name).length > 1;
-  return dup ? `${s.name}#${s.pid}` : s.name;
+  if (!dup) return s.name;
+  return claudeName ? `${s.name} (${claudeName})` : `${s.name}#${s.pid}`;
 }
