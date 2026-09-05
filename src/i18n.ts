@@ -129,7 +129,6 @@ type Msgs = {
   // claude: the Claude Code cross-session name (ListAgents/SendMessage), when
   // known — the one thing that tells two same-named sessions apart.
   sessionEntry: (
-    dot: string,
     n: number,
     label: string,
     tags: string,
@@ -148,10 +147,8 @@ type Msgs = {
   boundTag: string;
   defaultTag: string;
   monitoringTag: string;
-  legendBound: string;
-  legendDefault: string;
-  legendNumbers: string;
-  // example: a number that is actually in the list, so the sample command works
+  // The one footer line under the list: how to reply, and where the legend
+  // is. example: a number that is actually listed, so the sample works.
   legendRoute: (example: number) => string;
   // Labelled "this is the running version" footer, full version string.
   versionLine: (version: string) => string;
@@ -212,6 +209,7 @@ const zh: Msgs = {
     "📌 备注",
     "· 编号固定不变，可用编号/名字/pid 选 session",
     "· 普通消息发给绑定的 session（没绑定就发给最近活跃且监控中的）",
+    "· /ls 图例：👀 监控中 · 📌 已绑定 · 📥 默认接收 · 📁 目录 · 🤖 Claude 会话名 · ⏱ 上次活跃",
     "· 📷 可以直接发图片，Claude 能看到内容",
     "· 🎤 语音会自动转成文字",
   ].join("\n"),
@@ -276,32 +274,21 @@ const zh: Msgs = {
   unreadWarn: (name) =>
     `提醒: 发给 "${name}" 的消息已 2 分钟未被读取。该 session 可能没有在监控消息。\n发送 /sessions 查看状态，或用 /s <编号> <消息> 换一个 session。`,
   sessionsHeader: (count) => `活跃 sessions (${count}):`,
-  // Laid out for a phone: ~24 CJK characters per line, single newlines kept.
-  // One field per line so nothing wraps mid-field; emoji act as field labels.
-  // WeChat on desktop collapses single newlines to spaces, and the same text
-  // still reads fine there because of those labels. Blank lines separate
-  // entries in both.
-  sessionEntry: (dot, n, label, tags, dir, ago, claude) =>
-    [
-      `${dot}【${n}】${label}${tags}`,
-      `📁 ${dir}`,
-      claude ? `🤖 ${claude}` : "",
-      `⏱ ${ago}`,
-    ]
-      .filter(Boolean)
-      .join("\n"),
+  // Laid out for a phone (~24 CJK characters per line, single newlines kept)
+  // and kept short: two lines per session, emoji as field labels, and no
+  // legend — that lives in /help. Desktop WeChat collapses single newlines
+  // to spaces; the labels keep it readable there too.
+  sessionEntry: (n, label, tags, dir, ago, claude) =>
+    `【${n}】${label}${tags} · ⏱ ${ago}\n📁 ${dir}${claude ? ` · 🤖 ${claude}` : ""}`,
   idleSection: (body) =>
-    `💤 闲置（未监控、2 小时以上未活跃）\n\n${body}\n\n可发 /close idle 一键清理`,
+    `💤 闲置（未监控、2 小时以上未活跃，/close idle 可清理）\n\n${body}`,
   idleEntry: (n, label, ago, dir, claude) =>
-    `○【${n}】${label} · ⏱ ${ago}\n📁 ${dir}${claude ? ` · 🤖 ${claude}` : ""}`,
+    `【${n}】${label} · ⏱ ${ago}\n📁 ${dir}${claude ? ` · 🤖 ${claude}` : ""}`,
   boundTag: " 📌 已绑定",
   defaultTag: " 📥 默认接收",
   monitoringTag: " 👀",
-  legendBound: "📌 已绑定 = 你的消息都发到这里（/use off 取消）",
-  legendDefault: "📥 默认接收 = 不带前缀的消息发到这里（/use <编号> 可固定绑定）",
-  legendNumbers: "👀 监控中 · 📁 目录 · 🤖 Claude 会话名 · ⏱ 上次活跃",
   legendRoute: (example) =>
-    `回复某个 session：/s <编号> <消息>\n例 /s ${example} 你好 · 编号固定不变`,
+    `回复：/s <编号> <消息>，例 /s ${example} 你好 · 图例见 /help`,
   versionLine: (version) => `📦 当前版本：wechat-claude @ v${version}`,
   updateAvailable: (current, latest) =>
     `⬆️ 有新版本 v${latest}（当前 v${current}）。在电脑上更新:\nnpm i -g wechat-claude-sessions@latest && wechat-claude daemon restart\n然后在各 Claude Code session 里 /mcp → wechat → Reconnect，再 /wechat 重新挂上。`,
@@ -367,6 +354,7 @@ const en: Msgs = {
     "📌 Notes",
     "· Numbers are stable; select by number / name / pid",
     "· Plain messages go to your bound session (else the most recent monitoring one)",
+    "· /ls legend: 👀 monitoring · 📌 bound · 📥 default · 📁 directory · 🤖 Claude session name · ⏱ last active",
     "· 📷 Send images directly — Claude can see them",
     "· 🎤 Voice is auto-transcribed to text",
   ].join("\n"),
@@ -430,27 +418,17 @@ const en: Msgs = {
   unreadWarn: (name) =>
     `Heads up: your message to "${name}" has been unread for 2 minutes. That session may not be monitoring.\nSend /sessions to check, or /s <number> <message> to pick another.`,
   sessionsHeader: (count) => `Active sessions (${count}):`,
-  sessionEntry: (dot, n, label, tags, dir, ago, claude) =>
-    [
-      `${dot} [${n}] ${label}${tags}`,
-      `📁 ${dir}`,
-      claude ? `🤖 ${claude}` : "",
-      `⏱ ${ago}`,
-    ]
-      .filter(Boolean)
-      .join("\n"),
+  sessionEntry: (n, label, tags, dir, ago, claude) =>
+    `[${n}] ${label}${tags} · ⏱ ${ago}\n📁 ${dir}${claude ? ` · 🤖 ${claude}` : ""}`,
   idleSection: (body) =>
-    `💤 Idle (unmonitored, 2h+ inactive)\n\n${body}\n\nSend /close idle to clean up`,
+    `💤 Idle (unmonitored, 2h+ inactive; /close idle cleans up)\n\n${body}`,
   idleEntry: (n, label, ago, dir, claude) =>
-    `○ [${n}] ${label} · ⏱ ${ago}\n📁 ${dir}${claude ? ` · 🤖 ${claude}` : ""}`,
+    `[${n}] ${label} · ⏱ ${ago}\n📁 ${dir}${claude ? ` · 🤖 ${claude}` : ""}`,
   boundTag: " 📌 bound",
   defaultTag: " 📥 default",
   monitoringTag: " 👀",
-  legendBound: "📌 bound = your messages go here (/use off to unbind)",
-  legendDefault: "📥 default = plain messages go here (/use <n> to pin)",
-  legendNumbers: "👀 monitoring · 📁 directory · 🤖 Claude session name · ⏱ last active",
   legendRoute: (example) =>
-    `Reply to one session: /s <n> <message>\ne.g. /s ${example} hello · numbers never change`,
+    `Reply: /s <n> <message>, e.g. /s ${example} hello · legend in /help`,
   versionLine: (version) => `📦 Running version: wechat-claude @ v${version}`,
   updateAvailable: (current, latest) =>
     `⬆️ Update available: v${latest} (you have v${current}). On your computer:\nnpm i -g wechat-claude-sessions@latest && wechat-claude daemon restart\nthen in each Claude Code session: /mcp → wechat → Reconnect, and /wechat again.`,

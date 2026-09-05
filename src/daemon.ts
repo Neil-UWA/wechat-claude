@@ -991,13 +991,11 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     const mainLines = entries
       .filter(({ s }) => !isIdle(s))
       .map(({ s, num }) => {
-        const active = now - s.lastActive < 120_000 ? "●" : "○";
         const tags =
           (isMonitoring(s.id) ? m.monitoringTag : "") +
           (s.id === receiverId ? (bound ? m.boundTag : m.defaultTag) : "");
         const d = describe(s);
         return m.sessionEntry(
-          active,
           num,
           sessionLabel(s, sessions),
           tags,
@@ -1029,8 +1027,7 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
         m.sessionsHeader(sessions.length),
         mainLines.join("\n\n"),
         idleLines.length > 0 ? m.idleSection(idleLines.join("\n\n")) : "",
-        // Legend as two paragraphs: what the symbols mean, then how to reply.
-        [bound ? m.legendBound : m.legendDefault, m.legendNumbers].join("\n"),
+        // No legend here (it is in /help): on a phone it doubled the length.
         m.legendRoute(example),
       ].filter(Boolean)
     );
