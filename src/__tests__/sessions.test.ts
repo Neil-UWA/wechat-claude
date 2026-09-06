@@ -27,6 +27,8 @@ vi.mock("node:os", async () => {
 const {
   cwdLabel,
   listSessions,
+  sessionFate,
+  supersededIds,
   sortedSessions,
   findSession,
   findNameConflict,
@@ -45,12 +47,21 @@ function fake(
   name: string,
   pid: number,
   lastActive = Date.now(),
-  claudeName?: string
+  claudeName?: string,
+  claudePid?: number
 ): void {
   mkdirSync(sessionsDir, { recursive: true });
   writeFileSync(
     path.join(sessionsDir, `${id}.json`),
-    JSON.stringify({ id, name, cwd: `/fake/${name}`, pid, lastActive, claudeName })
+    JSON.stringify({
+      id,
+      name,
+      cwd: `/fake/${name}`,
+      pid,
+      lastActive,
+      claudeName,
+      claudePid,
+    })
   );
 }
 
@@ -80,6 +91,78 @@ describe("listSessions", () => {
     expect(list.map((s) => s.name)).toContain("alpha");
     expect(list.find((s) => s.name === "ghost")).toBeUndefined();
     expect(existsSync(path.join(sessionsDir, "dead.json"))).toBe(false);
+  });
+});
+
+describe("supersededIds", () => {
+  const info = (
+    id: string,
+    lastActive: number,
+    claudePid: number | undefined,
+    pid = ALIVE
+  ) => ({ id, name: "s", cwd: "/x", pid, lastActive, claudePid });
+
+  it("keeps only the most recently active server per Claude process", () => {
+    const ids = supersededIds([
+      info("old", 1_000, ALIVE),
+      info("new", 2_000, ALIVE),
+    ]);
+    expect([...ids]).toEqual(["old"]);
+  });
+
+  it("leaves separate Claude processes alone", () => {
+    const ids = supersededIds([
+      info("a", 1_000, ALIVE),
+      info("b", 2_000, ALIVE2),
+    ]);
+    expect(ids.size).toBe(0);
+  });
+
+  it("ignores sessions from older builds that recorded no parent", () => {
+    const ids = supersededIds([
+      info("a", 1_000, undefined),
+      info("b", 2_000, undefined),
+    ]);
+    expect(ids.size).toBe(0);
+  });
+
+  it("does not reap when the recorded parent is gone (the pid may be reused)", () => {
+    const dead = 999_999_999;
+    const ids = supersededIds([
+      info("a", 1_000, dead),
+      info("b", 2_000, dead),
+    ]);
+    expect(ids.size).toBe(0);
+  });
+});
+
+describe("listSessions with a reconnected MCP server", () => {
+  it("hides the superseded session so it cannot win routing", () => {
+    fake("old", "repo:main", ALIVE, Date.now() - 60_000, "repo-a1", ALIVE);
+    fake("new", "repo:main", ALIVE2, Date.now(), "repo-a1", ALIVE);
+    monitor("old");
+    monitor("new");
+    expect(listSessions().map((s) => s.id)).toEqual(["new"]);
+    expect(getDefaultTarget(listSessions())?.id).toBe("new");
+  });
+});
+
+describe("sessionFate", () => {
+  it("reports a live session", () => {
+    fake("a", "alpha", ALIVE);
+    expect(sessionFate("a").state).toBe("live");
+  });
+
+  it("names the replacement after a reconnect", () => {
+    fake("old", "repo:main", ALIVE, Date.now() - 60_000, undefined, ALIVE);
+    fake("new", "repo:main", ALIVE2, Date.now(), undefined, ALIVE);
+    const fate = sessionFate("old");
+    expect(fate.state).toBe("superseded");
+    if (fate.state === "superseded") expect(fate.replacement.id).toBe("new");
+  });
+
+  it("reports a session whose file is gone", () => {
+    expect(sessionFate("nope").state).toBe("gone");
   });
 });
 

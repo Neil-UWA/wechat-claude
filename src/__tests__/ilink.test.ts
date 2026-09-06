@@ -292,6 +292,52 @@ describe("ILinkClient", () => {
 
       await expect(client.sendText(TEST_USER_ID, "hello")).rejects.toThrow("sendmessage failed: 500");
     });
+
+    // A revoked token answers HTTP 200 with the error in the body. Reading
+    // only res.ok reports the reply as delivered and drops it.
+    it("treats errcode -14 in a 200 body as an expired session", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(mockFetchResponse({ errcode: -14, errmsg: "session timeout" }))
+      );
+
+      await expect(client.sendText(TEST_USER_ID, "hello")).rejects.toThrow(
+        "Session expired"
+      );
+      // The stale credential is dropped, so the next status is honest.
+      expect(fs.existsSync(SESSION_FILE)).toBe(false);
+      expect(client.isLoggedIn).toBe(false);
+    });
+
+    it("surfaces any other error code in the body", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ ret: 5 })));
+
+      await expect(client.sendText(TEST_USER_ID, "hello")).rejects.toThrow(
+        "sendmessage error 5"
+      );
+    });
+
+    it("records a successful send as proof the login still works", async () => {
+      // Restore from disk rather than setSession(), which stamps by itself.
+      fs.writeFileSync(SESSION_FILE, JSON.stringify(TEST_SESSION));
+      const client = new ILinkClient();
+      expect(client.isLoggedIn).toBe(true);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+      fs.rmSync(path.join(WECHAT_DIR, "login-verified"), { force: true });
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ ret: 0 })));
+      await client.sendText(TEST_USER_ID, "hello");
+
+      expect(fs.existsSync(path.join(WECHAT_DIR, "login-verified"))).toBe(true);
+    });
   });
 
   describe("uploadMedia", () => {

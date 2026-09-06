@@ -214,6 +214,7 @@ with `SendMessage`, tells you on WeChat which session it went to and how to
 ├── daemon.log            # daemon output
 ├── cursor.txt            # message polling cursor
 ├── expired.flag          # present when the WeChat login has expired
+├── login-verified        # timestamp of the last WeChat call that succeeded
 ├── usage-limit.json      # known Claude usage-limit state (incl. notified users)
 ├── update-check.json     # last `latest` version seen on npm (for the /ls upgrade notice)
 ├── replies/              # last time each session replied to each WeChat user
@@ -322,6 +323,16 @@ wechat-claude executes code on your machine in response to chat messages. Read
   exits on expiry and can no longer send messages. Back at the Mac, run
   `wechat-claude status`; if logged out, `wechat-claude login` (or
   `/wechat` in a session) to re-scan. Restart the daemon if needed.
+- **`status` says logged in, but sending fails.** The token is only cached
+  locally, and it can be revoked elsewhere (e.g. `wechat-claude uninstall` on
+  another machine). That is why the `Logged in:` line carries a qualifier:
+  `(verified …)` means a WeChat call actually succeeded recently, while
+  `(UNVERIFIED …)` means nothing has confirmed the token — don't count on it.
+  Re-run `wechat-claude login` (or `/wechat`) to re-scan.
+- **The watcher stopped.** It prints one `WECHAT: watcher stopping — …` line
+  saying why and exits non-zero (a silent exit 0 is indistinguishable from a
+  clean shutdown). If it was superseded — an MCP reconnect gave the session a
+  new id — run `wechat_status` and start a watcher with the new command.
 - **`/run` says "找不到目录".** The name didn't resolve to a project; add its
   parent to `repoDirs` in `~/.claude/wechat/config.json`, pass an absolute
   path, or use `/run . <task>` to run in the default directory.

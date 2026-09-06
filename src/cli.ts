@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ILinkClient } from "./ilink.js";
+import { loginVerification, verificationNote } from "./login-state.js";
 import { pkgFile } from "./pkg-root.js";
 import { DAEMON_PID_FILE, ensureDirs, WECHAT_DIR } from "./paths.js";
 import { type McpRegistration, classifyMcpRegistration } from "./utils.js";
@@ -192,7 +193,9 @@ function daemonRunning(): boolean {
 function status(): void {
   const client = new ILinkClient();
   const loggedIn = client.tryRestoreSession();
-  out(`Logged in:      ${loggedIn ? "yes" : "no"}`);
+  out(
+    `Logged in:      ${loggedIn ? "yes" : "no"}${loggedIn ? ` ${verificationNote(loginVerification())}` : ""}`
+  );
   out(`Daemon running: ${daemonRunning() ? "yes" : "no"}`);
   if (launchd.isMac())
     out(`launchd service: ${launchd.isLoaded() ? "installed" : "not installed"}`);

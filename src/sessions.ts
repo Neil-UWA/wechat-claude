@@ -20,6 +20,11 @@ export type SessionInfo = {
   // sessions must pass to SendMessage (see claude-sessions.ts). Distinct from
   // `name`, which is the WeChat routing name. Absent when unknown.
   claudeName?: string;
+  // Pid of the Claude Code process that spawned this MCP server, recorded at
+  // registration (process.ppid). Two live sessions sharing it are the same
+  // Claude session served by two MCP servers — see supersededIds(). Absent
+  // for sessions registered by an older build.
+  claudePid?: number;
 };
 
 // A routing name must survive `/s <name> <msg>`: the daemon takes the selector
@@ -153,6 +158,40 @@ export function writeSessionFile(info: SessionInfo): void {
   );
 }
 
+// Ids of sessions that are alive but no longer real: reconnecting the MCP
+// server (`/mcp`, a config change, an install switch) starts a second server
+// under the same Claude Code process while the first one keeps running. Its
+// watcher keeps heartbeating, so the ghost shows as `[monitoring]`, can win
+// the default-target election, and leaves the user staring at two identical
+// rows. Only the most recently active server for a given Claude pid is the
+// one Claude is actually talking to.
+//
+// Requires the parent to still be alive: a recorded pid whose process is gone
+// could have been reused by an unrelated Claude session, and reaping a real
+// session is worse than showing a stale one.
+export function supersededIds(sessions: SessionInfo[]): Set<string> {
+  const newest = new Map<number, SessionInfo>();
+  for (const s of sessions) {
+    if (s.claudePid === undefined) continue;
+    if (!isProcessAlive(s.claudePid)) continue;
+    const cur = newest.get(s.claudePid);
+    if (
+      !cur ||
+      s.lastActive > cur.lastActive ||
+      (s.lastActive === cur.lastActive && s.pid > cur.pid)
+    ) {
+      newest.set(s.claudePid, s);
+    }
+  }
+  const superseded = new Set<string>();
+  for (const s of sessions) {
+    if (s.claudePid === undefined) continue;
+    const winner = newest.get(s.claudePid);
+    if (winner && winner.id !== s.id) superseded.add(s.id);
+  }
+  return superseded;
+}
+
 // Live sessions, cleaning up files for dead processes. Sorted by pid.
 export function listSessions(): SessionInfo[] {
   const sessions: SessionInfo[] = [];
@@ -174,7 +213,36 @@ export function listSessions(): SessionInfo[] {
       } catch {}
     }
   } catch {}
-  return sessions.sort((a, b) => a.pid - b.pid);
+  const ghosts = supersededIds(sessions);
+  return sessions
+    .filter((s) => !ghosts.has(s.id))
+    .sort((a, b) => a.pid - b.pid);
+}
+
+// Why a session id is not in listSessions(): either its MCP server is gone,
+// or it was superseded by a reconnect (and the replacement is named). Lets a
+// watcher say which, instead of exiting silently.
+export type SessionFate =
+  | { state: "live" }
+  | { state: "gone" }
+  | { state: "superseded"; replacement: SessionInfo };
+
+export function sessionFate(id: string): SessionFate {
+  const live = listSessions();
+  if (live.some((s) => s.id === id)) return { state: "live" };
+  let self: SessionInfo | undefined;
+  try {
+    self = JSON.parse(
+      fs.readFileSync(path.join(SESSIONS_DIR, `${id}.json`), "utf-8")
+    ) as SessionInfo;
+  } catch {
+    return { state: "gone" };
+  }
+  if (!isProcessAlive(self.pid)) return { state: "gone" };
+  const replacement = live.find(
+    (s) => self?.claudePid !== undefined && s.claudePid === self.claudePid
+  );
+  return replacement ? { state: "superseded", replacement } : { state: "gone" };
 }
 
 // Listing/selection order: monitored sessions first, stable pid order within

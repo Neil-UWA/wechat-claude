@@ -1191,8 +1191,14 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      if (errMsg.includes("Session expired")) {
-        log("Session expired. Exiting.");
+      // "Not logged in" means the credential was cleared out from under the
+      // poll — a send that hit the same revoked token gets there first — and
+      // is the same failure, not a transient one to retry every 5s forever.
+      if (
+        errMsg.includes("Session expired") ||
+        errMsg.includes("Not logged in")
+      ) {
+        log(`Login is no longer valid (${errMsg}). Exiting.`);
         try {
           fs.writeFileSync(EXPIRED_FLAG_FILE, String(Date.now()));
         } catch {}

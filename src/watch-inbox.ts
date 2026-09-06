@@ -5,13 +5,23 @@
 //
 // Prints one line per new inbox delivery (for the Claude Code Monitor tool)
 // and maintains a heartbeat file so the daemon knows this session is
-// actively monitored. Exits when the session's MCP server goes away.
+// actively monitored. It also reports the two ways delivery breaks without
+// anything arriving here — an expired login and a dead daemon — and, when the
+// session it watches goes away or is replaced, prints why and exits non-zero:
+// a silent exit 0 reads as a clean shutdown, and the session goes deaf with
+// neither the agent nor the user any the wiser.
 import fs from "node:fs";
 import path from "node:path";
+import {
+  HEALTHY,
+  type DeliveryHealth,
+  healthTransition,
+  readDeliveryHealth,
+} from "./health.js";
 import { clearHeartbeat, touchHeartbeat } from "./monitoring.js";
 import { consumeNudge } from "./nudge.js";
 import { INBOX_DIR, NUDGE_DIR, SESSIONS_DIR } from "./paths.js";
-import type { SessionInfo } from "./sessions.js";
+import { type SessionInfo, sessionFate } from "./sessions.js";
 
 function resolveSessionByCwd(): string | undefined {
   let best: SessionInfo | undefined;
@@ -39,7 +49,6 @@ if (!sessionId) {
 }
 
 const inboxFile = path.join(INBOX_DIR, `${sessionId}.json`);
-const sessionFile = path.join(SESSIONS_DIR, `${sessionId}.json`);
 
 let lastSig = "";
 
@@ -101,25 +110,51 @@ try {
   // fall back to the interval below
 }
 
-function sessionAlive(): boolean {
-  try {
-    const info = JSON.parse(
-      fs.readFileSync(sessionFile, "utf-8")
-    ) as SessionInfo;
-    process.kill(info.pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+// Stopping is never routine from the agent's side: this session goes back to
+// receiving nothing, and an exit code of 0 with no output is indistinguishable
+// from a clean shutdown. Say why, on stdout, and exit non-zero — then the
+// Monitor tool surfaces it instead of the session silently going deaf.
+function stop(reason: string): void {
+  clearInterval(timer);
+  const line = `WECHAT: watcher stopping — ${reason}\n`;
+  process.stdout.write(line, () => process.exit(1));
+  // stdout to a pipe is asynchronous: exiting from the write callback keeps
+  // the line from being truncated, and this backstop covers the callback
+  // never firing (closed pipe).
+  setTimeout(() => process.exit(1), 2000);
+}
+
+let health: DeliveryHealth = HEALTHY;
+
+// Delivery can break while the watcher itself is perfectly healthy (the login
+// is revoked, the daemon dies). Report the change rather than sitting silent.
+function checkHealth(): void {
+  const next = readDeliveryHealth();
+  const line = healthTransition(health, next);
+  health = next;
+  if (line) process.stdout.write(`${line}\n`);
 }
 
 // Fallback poll + heartbeat + liveness check.
-setInterval(() => {
-  if (!sessionAlive()) {
-    // MCP server (and thus the Claude session) is gone.
-    process.exit(0);
+const timer = setInterval(() => {
+  const fate = sessionFate(sessionId as string);
+  if (fate.state === "gone") {
+    stop(
+      `session ${sessionId} is gone (its MCP server exited). No message can be delivered here any more — do not report this session as monitoring.`
+    );
+    return;
+  }
+  if (fate.state === "superseded") {
+    stop(
+      `session ${sessionId} was replaced by session ${fate.replacement.id} (the MCP server reconnected — /mcp, a config change, or a reinstall). Messages now route to the new id: call wechat_status and start a watcher for it.`
+    );
+    return;
   }
   touchHeartbeat(sessionId);
   checkNudge();
   checkInbox();
+  checkHealth();
 }, 10_000);
+
+// Say so straight away if this session is starting up into a broken setup.
+checkHealth();

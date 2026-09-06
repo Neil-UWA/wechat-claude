@@ -15,6 +15,7 @@ import type {
   UploadedMedia,
   WeixinMessage,
 } from "./types.js";
+import { clearLoginVerified, markLoginVerified } from "./login-state.js";
 import { decryptCdnMedia, extractText, imageExtension } from "./utils.js";
 
 export const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
@@ -41,6 +42,9 @@ export class ILinkClient {
   setSession(session: Session): void {
     this.session = session;
     this.saveSession();
+    // A token that has just come back from a confirmed QR scan is as verified
+    // as it gets.
+    markLoginVerified();
   }
 
   private saveSession(): void {
@@ -226,6 +230,7 @@ export class ILinkClient {
           ilinkUserId: status.ilink_user_id,
           baseUrl: status.baseurl || DEFAULT_BASE_URL,
         };
+        markLoginVerified();
         return;
       }
     }
@@ -256,6 +261,7 @@ export class ILinkClient {
     if (codes.includes(-14)) {
       this.session = null;
       this.clearSessionFile();
+      clearLoginVerified();
       throw new Error("Session expired, please login again");
     }
     const errCode = codes.find((c) => c !== 0);
@@ -268,6 +274,9 @@ export class ILinkClient {
     if (data.get_updates_buf) {
       this.updatesCursor = data.get_updates_buf;
     }
+
+    // The long poll came back OK: proof the token is still good right now.
+    markLoginVerified();
 
     return data.msgs ?? [];
   }
@@ -311,6 +320,40 @@ export class ILinkClient {
       });
 
       if (!res.ok) throw new Error(`sendmessage failed: ${res.status}`);
+      // A revoked token comes back as HTTP 200 with an error code in the
+      // body; without this the send is reported as delivered and the reply
+      // is simply lost.
+      this.checkSendResponse(await this.readCodes(res));
+      markLoginVerified();
+    }
+  }
+
+  // Error codes carried in a response body (`ret` and/or `errcode`), if any.
+  private async readCodes(res: Response): Promise<number[]> {
+    try {
+      const data = (await res.json()) as {
+        ret?: number;
+        errcode?: number;
+      };
+      return [data.ret, data.errcode].filter(
+        (c): c is number => typeof c === "number"
+      );
+    } catch {
+      // Not JSON, or an empty body — nothing to object to.
+      return [];
+    }
+  }
+
+  private checkSendResponse(codes: number[]): void {
+    if (codes.includes(-14)) {
+      this.session = null;
+      this.clearSessionFile();
+      clearLoginVerified();
+      throw new Error("Session expired, please login again");
+    }
+    const errCode = codes.find((c) => c !== 0);
+    if (errCode !== undefined) {
+      throw new Error(`sendmessage error ${errCode}`);
     }
   }
 
@@ -420,6 +463,7 @@ export class ILinkClient {
       });
       if (!textRes.ok)
         throw new Error(`sendmessage (caption) failed: ${textRes.status}`);
+      this.checkSendResponse(await this.readCodes(textRes));
     }
 
     const imageItem = {
@@ -451,6 +495,8 @@ export class ILinkClient {
       }),
     });
     if (!res.ok) throw new Error(`sendmessage (image) failed: ${res.status}`);
+    this.checkSendResponse(await this.readCodes(res));
+    markLoginVerified();
   }
 
   // Download and decrypt an incoming CDN media item (e.g. an image the user
@@ -603,6 +649,7 @@ export class ILinkClient {
     this.contextTokens.clear();
     this.typingTickets.clear();
     this.clearSessionFile();
+    clearLoginVerified();
   }
 
   getStatus(): {
