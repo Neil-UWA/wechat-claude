@@ -266,11 +266,8 @@ function startDaemonDetached(): boolean {
   return false;
 }
 
-// A login with nothing polling is not a working setup — the daemon is what
-// receives messages — and the CLI used to leave that as homework in a "next
-// steps" list. Worse, a daemon started before the login had already exited for
-// want of it. Start it here, the way `/wechat` does on the MCP side.
-function startDaemonAfterLogin(): boolean {
+// Make sure something is polling, without disturbing a daemon that already is.
+function ensureDaemonRunning(): boolean {
   if (daemonRunning()) {
     out("  • daemon already running");
     return true;
@@ -280,6 +277,29 @@ function startDaemonAfterLogin(): boolean {
     out(ok ? "  ✓ launchd service started" : "  ! launchctl load failed");
     return ok;
   }
+  return startDaemonDetached();
+}
+
+// A login with nothing polling is not a working setup — the daemon is what
+// receives messages — and the CLI used to leave that as homework in a "next
+// steps" list.
+//
+// It must be a restart, not a "start if absent": a running daemon holds the
+// credential it read at startup and never re-reads session.json. After a
+// re-login it would keep polling with the old token, and its own expiry
+// handling would then delete the session file this login just wrote.
+function restartDaemonForNewLogin(): boolean {
+  if (launchd.isMac() && launchd.isLoaded()) {
+    // load() unloads first, so this replaces the running job.
+    const ok = launchd.load();
+    out(
+      ok
+        ? "  ✓ launchd service restarted with the new login"
+        : "  ! launchctl load failed"
+    );
+    return ok;
+  }
+  if (stopDaemon()) out("  • stopped the daemon still holding the old login");
   return startDaemonDetached();
 }
 
@@ -295,7 +315,24 @@ function daemon(sub: string | undefined): number {
       // `wechat-claude daemon` runs in the foreground and dies with the
       // terminal; "start" is the one people reach for when they mean "run it
       // as a service", and it used to be an unknown command.
-      return startDaemonAfterLogin() ? 0 : 1;
+      return ensureDaemonRunning() ? 0 : 1;
+    case "stop": {
+      // Under launchd, killing the process achieves nothing: KeepAlive
+      // restarts it. Unload the job instead — the plist stays on disk, so it
+      // comes back at the next login, or right away with `daemon start`.
+      if (launchd.isMac() && launchd.isLoaded()) {
+        const ok = launchd.unload();
+        out(
+          ok
+            ? "  ✓ launchd service stopped (returns at next login, or `wechat-claude daemon start`)"
+            : "  ! launchctl unload failed"
+        );
+        return ok ? 0 : 1;
+      }
+      if (stopDaemon()) out("  ✓ daemon stopped");
+      else out("  • no daemon was running");
+      return 0;
+    }
     case "install": {
       if (!launchd.isMac()) {
         out("launchd is macOS-only. On Linux/Windows, supervise the daemon");
@@ -353,7 +390,7 @@ function daemon(sub: string | undefined): number {
     default:
       out(`Unknown daemon command: ${sub}`);
       out(
-        "Usage: wechat-claude daemon [run|start|restart|install|uninstall|status|log]"
+        "Usage: wechat-claude daemon [run|start|stop|restart|install|uninstall|status|log]"
       );
       return 1;
   }
@@ -367,6 +404,7 @@ function usage(): void {
   out("  wechat-claude status             show daemon / login state");
   out("  wechat-claude daemon             run the daemon in the foreground");
   out("  wechat-claude daemon start       start it in the background");
+  out("  wechat-claude daemon stop        stop it (launchd job included)");
   out("  wechat-claude daemon restart     restart it (use after an upgrade)");
   out("  wechat-claude daemon install     install it as a launchd service (macOS)");
   out("  wechat-claude daemon uninstall   remove the launchd service");
@@ -386,7 +424,7 @@ async function main(): Promise<void> {
       const ok = await login();
       out("");
       if (ok) {
-        const started = startDaemonAfterLogin();
+        const started = restartDaemonForNewLogin();
         out("");
         out("Setup complete. Next step:");
         out("  In a Claude Code session, type: /wechat");
@@ -404,7 +442,7 @@ async function main(): Promise<void> {
       // The daemon is the half of the system that receives messages, and it
       // exits when there is no login — so the one moment it is worth starting
       // is right after a login succeeds.
-      if (await login()) startDaemonAfterLogin();
+      if (await login()) restartDaemonForNewLogin();
       break;
     case "status":
       status();

@@ -206,7 +206,9 @@ session 用 `SendMessage` 找它时要用的（见 `ListAgents`）。`wechat_sta
 wechat-claude setup              # 注册 MCP server + /wechat 命令，然后登录
 wechat-claude login              # （重新）扫码认证
 wechat-claude status             # 查看登录 / daemon / 服务状态
-wechat-claude daemon             # 前台运行 daemon
+wechat-claude daemon             # 前台运行 daemon（跟着终端一起退出）
+wechat-claude daemon start       # 后台启动 daemon
+wechat-claude daemon stop        # 停止 daemon（装了 launchd 就卸载那个 job）
 wechat-claude daemon restart     # 重启 daemon（升级后用）
 wechat-claude daemon install     # 装成 launchd 服务（macOS）
 wechat-claude daemon uninstall   # 移除 launchd 服务
@@ -295,6 +297,10 @@ wechat-claude 会响应聊天消息、在你的机器上执行代码。完整威
 - **`/run` 提示"找不到目录"。** 那个名字没解析到项目；把它的父目录加到
   `~/.claude/wechat/config.json` 的 `repoDirs` 里，或者传绝对路径，或者用
   `/run . <任务>` 在默认目录里跑。
+- **登录之后还是收不到消息。** `wechat-claude login` 和 `setup` 现在会自己把 daemon 起来
+  （已经在跑的会重启 —— 老 daemon 手里攥的是旧 token，不换掉它会拿旧 token 去轮询，
+  然后把你刚写好的 session.json 当过期凭证删掉）。想手动控制就用
+  `wechat-claude daemon start` / `stop`。
 - **消息发出去没反应。** 检查 `wechat-claude daemon status` 和
   `wechat-claude daemon log`。如果目标 session 不在 `👀 监控中`，在它里面跑 `/wechat`，
   或者用 `/use <编号>` 绑定。

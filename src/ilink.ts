@@ -32,6 +32,15 @@ function generateUin(): string {
   return Buffer.from(String(n)).toString("base64");
 }
 
+// `ret` and `errcode` both appear across this API, sometimes together.
+function errorCodes(body: unknown): number[] {
+  if (typeof body !== "object" || body === null) return [];
+  const data = body as { ret?: unknown; errcode?: unknown };
+  return [data.ret, data.errcode].filter(
+    (c): c is number => typeof c === "number"
+  );
+}
+
 function generateClientId(): string {
   return `wechat-claude-${crypto.randomBytes(8).toString("hex")}`;
 }
@@ -39,22 +48,32 @@ function generateClientId(): string {
 export class ILinkClient {
   private session: Session | null = null;
 
+  // Throws if the session could not be persisted. The whole point of a login
+  // is the file it leaves behind — the daemon that starts afterwards has
+  // nothing else to read — so a caller must not be able to report success
+  // while the write silently failed on permissions or a full disk.
   setSession(session: Session): void {
+    const previous = this.session;
     this.session = session;
-    this.saveSession();
+    try {
+      this.saveSession();
+    } catch (err) {
+      this.session = previous;
+      throw new Error(
+        `Logged in, but the session could not be saved to ${SESSION_FILE}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
     // A token that has just come back from a confirmed QR scan is as verified
     // as it gets.
     markLoginVerified();
   }
 
   private saveSession(): void {
-    try {
-      if (!fs.existsSync(WECHAT_DIR)) fs.mkdirSync(WECHAT_DIR, { recursive: true });
-      fs.writeFileSync(SESSION_FILE, JSON.stringify(this.session), { mode: 0o600 });
-      process.stderr.write(`[wechat-claude] Session saved to ${SESSION_FILE}\n`);
-    } catch (err) {
-      process.stderr.write(`[wechat-claude] Failed to save session: ${err}\n`);
-    }
+    if (!fs.existsSync(WECHAT_DIR)) fs.mkdirSync(WECHAT_DIR, { recursive: true });
+    fs.writeFileSync(SESSION_FILE, JSON.stringify(this.session), { mode: 0o600 });
+    process.stderr.write(`[wechat-claude] Session saved to ${SESSION_FILE}\n`);
   }
 
   tryRestoreSession(quiet = false): boolean {
@@ -70,8 +89,12 @@ export class ILinkClient {
           this.session = data;
           process.stderr.write(`[wechat-claude] Session restored from ${file}\n`);
           if (file === OLD_SESSION_FILE) {
-            this.saveSession();
-            try { fs.unlinkSync(OLD_SESSION_FILE); } catch {}
+            // Best-effort migration: a failed copy must not turn a session we
+            // just restored into a failed restore.
+            try {
+              this.saveSession();
+              fs.unlinkSync(OLD_SESSION_FILE);
+            } catch {}
           }
           return true;
         }
@@ -84,14 +107,48 @@ export class ILinkClient {
 
   // Clear both files: isLoggedIn re-reads from disk when it has no token, so
   // leaving the legacy file behind would silently undo a logout.
-  private clearSessionFile(): void {
+  //
+  // `expectedToken` guards the expiry path: a rejected request may have been
+  // in flight while another session (or the CLI) logged in and wrote a fresh
+  // token, and deleting that would log the user out of a login that had just
+  // succeeded. Deletion is unconditional only for an explicit logout.
+  // Returns whether anything was actually removed.
+  private clearSessionFile(expectedToken?: string): boolean {
+    let removed = false;
     for (const file of [SESSION_FILE, OLD_SESSION_FILE]) {
       try {
-        if (fs.existsSync(file)) fs.unlinkSync(file);
+        if (!fs.existsSync(file)) continue;
+        if (expectedToken !== undefined && !this.fileHasToken(file, expectedToken)) {
+          continue;
+        }
+        fs.unlinkSync(file);
+        removed = true;
       } catch {
         // non-fatal
       }
     }
+    return removed;
+  }
+
+  // Whether the credential on disk is still the one a request failed with.
+  // Unreadable or malformed content counts as ours: it cannot be a fresh
+  // login, and leaving it behind would keep `isLoggedIn` true forever.
+  private fileHasToken(file: string, token: string): boolean {
+    try {
+      const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Partial<Session>;
+      return data.botToken === undefined || data.botToken === token;
+    } catch {
+      return true;
+    }
+  }
+
+  // Shared by every path that learns the credential is dead (errcode -14).
+  private handleExpiredSession(): void {
+    const failed = this.session?.botToken;
+    this.session = null;
+    // Only forget the verification stamp if this really was the live
+    // credential; a concurrent login owns both the file and the stamp.
+    if (this.clearSessionFile(failed)) clearLoginVerified();
   }
   private updatesCursor = "";
   private pendingMessages: PendingMessage[] = [];
@@ -263,9 +320,7 @@ export class ILinkClient {
       (c): c is number => typeof c === "number"
     );
     if (codes.includes(-14)) {
-      this.session = null;
-      this.clearSessionFile();
-      clearLoginVerified();
+      this.handleExpiredSession();
       throw new Error("Session expired, please login again");
     }
     const errCode = codes.find((c) => c !== 0);
@@ -335,29 +390,21 @@ export class ILinkClient {
   // Error codes carried in a response body (`ret` and/or `errcode`), if any.
   private async readCodes(res: Response): Promise<number[]> {
     try {
-      const data = (await res.json()) as {
-        ret?: number;
-        errcode?: number;
-      };
-      return [data.ret, data.errcode].filter(
-        (c): c is number => typeof c === "number"
-      );
+      return errorCodes(await res.json());
     } catch {
       // Not JSON, or an empty body — nothing to object to.
       return [];
     }
   }
 
-  private checkSendResponse(codes: number[]): void {
+  private checkSendResponse(codes: number[], what = "sendmessage"): void {
     if (codes.includes(-14)) {
-      this.session = null;
-      this.clearSessionFile();
-      clearLoginVerified();
+      this.handleExpiredSession();
       throw new Error("Session expired, please login again");
     }
     const errCode = codes.find((c) => c !== 0);
     if (errCode !== undefined) {
-      throw new Error(`sendmessage error ${errCode}`);
+      throw new Error(`${what} error ${errCode}`);
     }
   }
 
@@ -393,6 +440,10 @@ export class ILinkClient {
     if (!uploadRes.ok)
       throw new Error(`getuploadurl failed: ${uploadRes.status}`);
     const uploadData = (await uploadRes.json()) as GetUploadUrlResponse;
+    // The first authenticated call of an image send. Without this a revoked
+    // token surfaces here as "no upload URL", leaving the dead credential in
+    // place and the real reason unreported.
+    this.checkSendResponse(errorCodes(uploadData), "getuploadurl");
 
     const fullUrl = uploadData.upload_full_url?.trim();
     let cdnUrl: string;
@@ -655,6 +706,7 @@ export class ILinkClient {
     this.clearSessionFile();
     clearLoginVerified();
   }
+
 
   getStatus(): {
     loggedIn: boolean;

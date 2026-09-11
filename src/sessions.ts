@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { claudeRecordsForSessions } from "./claude-sessions.js";
+import { claudeRecordsForSessions, parentPids } from "./claude-sessions.js";
 import { isMonitoring } from "./monitoring.js";
 import { INBOX_DIR, SESSIONS_DIR, isProcessAlive } from "./paths.js";
 import { assignSessionNumbers } from "./session-numbers.js";
@@ -158,35 +158,65 @@ export function writeSessionFile(info: SessionInfo): void {
   );
 }
 
+// The Claude Code process each session's MCP server belongs to, keyed by
+// session id. `ps` is the authority — it reports the parent as it is right
+// now, which is what makes this safe against pid reuse — and the recorded
+// claudePid is the fallback for platforms with no usable `ps`.
+//
+// Two pids are never a grouping key: an orphaned MCP server is reparented to
+// launchd/init, and pid 1 is not a Claude session. Sessions with no answer at
+// all are simply absent, and absent means "never grouped".
+export function claudeParents(
+  sessions: SessionInfo[],
+  parents: Map<number, number> = parentPids(sessions.map((s) => s.pid))
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const s of sessions) {
+    const live = parents.get(s.pid);
+    if (live !== undefined) {
+      if (live > 1) out.set(s.id, live);
+      continue;
+    }
+    if (s.claudePid !== undefined && s.claudePid > 1 && isProcessAlive(s.claudePid)) {
+      out.set(s.id, s.claudePid);
+    }
+  }
+  return out;
+}
+
 // Ids of sessions that are alive but no longer real: reconnecting the MCP
 // server (`/mcp`, a config change, an install switch) starts a second server
 // under the same Claude Code process while the first one keeps running. Its
 // watcher keeps heartbeating, so the ghost shows as `[monitoring]`, can win
 // the default-target election, and leaves the user staring at two identical
-// rows. Only the most recently active server for a given Claude pid is the
-// one Claude is actually talking to.
+// rows. Only the most recently active server for a given Claude process is
+// the one Claude is actually talking to.
 //
-// Requires the parent to still be alive: a recorded pid whose process is gone
-// could have been reused by an unrelated Claude session, and reaping a real
-// session is worse than showing a stale one.
-export function supersededIds(sessions: SessionInfo[]): Set<string> {
+// Grouping by the live parent rather than the recorded one also covers the
+// upgrade: servers started by an older build recorded no claudePid at all, so
+// their ghosts would otherwise survive installing this fix.
+export function supersededIds(
+  sessions: SessionInfo[],
+  parentById: Map<string, number> = claudeParents(sessions)
+): Set<string> {
   const newest = new Map<number, SessionInfo>();
   for (const s of sessions) {
-    if (s.claudePid === undefined) continue;
-    if (!isProcessAlive(s.claudePid)) continue;
-    const cur = newest.get(s.claudePid);
+    const parent = parentById.get(s.id);
+    if (parent === undefined) continue;
+    const cur = newest.get(parent);
     if (
       !cur ||
       s.lastActive > cur.lastActive ||
       (s.lastActive === cur.lastActive && s.pid > cur.pid)
     ) {
-      newest.set(s.claudePid, s);
+      newest.set(parent, s);
     }
   }
   const superseded = new Set<string>();
   for (const s of sessions) {
-    if (s.claudePid === undefined) continue;
-    const winner = newest.get(s.claudePid);
+    const parent = parentById.get(s.id);
+    if (parent === undefined) continue;
+    const winner = newest.get(parent);
     if (winner && winner.id !== s.id) superseded.add(s.id);
   }
   return superseded;
@@ -213,7 +243,9 @@ export function listSessions(): SessionInfo[] {
       } catch {}
     }
   } catch {}
-  const ghosts = supersededIds(sessions);
+  // One session can't be superseded by anything, and `ps` costs a subprocess.
+  const ghosts =
+    sessions.length > 1 ? supersededIds(sessions) : new Set<string>();
   return sessions
     .filter((s) => !ghosts.has(s.id))
     .sort((a, b) => a.pid - b.pid);
@@ -239,9 +271,14 @@ export function sessionFate(id: string): SessionFate {
     return { state: "gone" };
   }
   if (!isProcessAlive(self.pid)) return { state: "gone" };
-  const replacement = live.find(
-    (s) => self?.claudePid !== undefined && s.claudePid === self.claudePid
-  );
+  // Resolved the same way supersedence is decided, so a watcher is told about
+  // its replacement even when neither row recorded a parent.
+  const parents = claudeParents([self, ...live]);
+  const ours = parents.get(self.id);
+  const replacement =
+    ours === undefined
+      ? undefined
+      : live.find((s) => parents.get(s.id) === ours);
   return replacement ? { state: "superseded", replacement } : { state: "gone" };
 }
 

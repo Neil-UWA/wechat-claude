@@ -237,7 +237,9 @@ with `SendMessage`, tells you on WeChat which session it went to and how to
 wechat-claude setup              # Register MCP server + /wechat command, then log in
 wechat-claude login              # (Re)authenticate by scanning a QR code
 wechat-claude status             # Show login / daemon / service state
-wechat-claude daemon             # Run the daemon in the foreground
+wechat-claude daemon             # Run the daemon in the foreground (dies with the terminal)
+wechat-claude daemon start       # Start it in the background
+wechat-claude daemon stop        # Stop it (unloads the launchd job when one owns it)
 wechat-claude daemon restart     # Restart it (use after upgrading)
 wechat-claude daemon install     # Install as a launchd service (macOS)
 wechat-claude daemon uninstall   # Remove the launchd service
@@ -336,6 +338,11 @@ wechat-claude executes code on your machine in response to chat messages. Read
 - **`/run` says "找不到目录".** The name didn't resolve to a project; add its
   parent to `repoDirs` in `~/.claude/wechat/config.json`, pass an absolute
   path, or use `/run . <task>` to run in the default directory.
+- **Logged in, still receiving nothing.** `wechat-claude login` and `setup` now
+  start the daemon themselves, restarting one that is already running — it
+  holds the credential it read at startup, so after a re-login it would keep
+  polling with the old token and then delete the session file the new login
+  just wrote. `wechat-claude daemon start` / `stop` control it by hand.
 - **A message got no response.** Check `wechat-claude daemon status` and
   `wechat-claude daemon log`. If the target session isn't `👀 monitoring`, run
   `/wechat` in it or bind with `/use <n>`.

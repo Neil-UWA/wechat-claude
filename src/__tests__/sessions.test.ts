@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
+import { type ChildProcess, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import {
   mkdtempSync,
@@ -25,6 +26,7 @@ vi.mock("node:os", async () => {
 });
 
 const {
+  claudeParents,
   cwdLabel,
   listSessions,
   sessionFate,
@@ -41,6 +43,19 @@ const {
 // process.pid and process.ppid are alive; use them so isProcessAlive passes.
 const ALIVE = process.pid;
 const ALIVE2 = process.ppid;
+
+// Supersedence groups by the *live* parent pid, read from `ps`, so a faithful
+// fixture needs two real processes that genuinely share one parent — the way
+// two MCP servers share one Claude Code process. Children of this test
+// process are exactly that.
+const children: ChildProcess[] = [];
+
+function siblingPid(): number {
+  const child = spawn("sleep", ["30"], { stdio: "ignore" });
+  children.push(child);
+  if (child.pid === undefined) throw new Error("could not spawn a test process");
+  return child.pid;
+}
 
 function fake(
   id: string,
@@ -81,7 +96,10 @@ beforeEach(() => {
   rmSync(numbersFile, { force: true });
 });
 
-afterAll(() => rmSync(testHome, { recursive: true, force: true }));
+afterAll(() => {
+  for (const child of children) child.kill();
+  rmSync(testHome, { recursive: true, force: true });
+});
 
 describe("listSessions", () => {
   it("returns live sessions and cleans up dead ones", () => {
@@ -102,48 +120,94 @@ describe("supersededIds", () => {
     pid = ALIVE
   ) => ({ id, name: "s", cwd: "/x", pid, lastActive, claudePid });
 
+  // Parents come from `ps` in production; supply them directly so the tests
+  // describe the grouping rule rather than this machine's process tree.
+  const parents = (entries: Record<string, number>): Map<string, number> =>
+    new Map(Object.entries(entries));
+
   it("keeps only the most recently active server per Claude process", () => {
-    const ids = supersededIds([
-      info("old", 1_000, ALIVE),
-      info("new", 2_000, ALIVE),
-    ]);
+    const ids = supersededIds(
+      [info("old", 1_000, ALIVE), info("new", 2_000, ALIVE)],
+      parents({ old: 4242, new: 4242 })
+    );
     expect([...ids]).toEqual(["old"]);
   });
 
   it("leaves separate Claude processes alone", () => {
-    const ids = supersededIds([
-      info("a", 1_000, ALIVE),
-      info("b", 2_000, ALIVE2),
-    ]);
+    const ids = supersededIds(
+      [info("a", 1_000, ALIVE), info("b", 2_000, ALIVE2)],
+      parents({ a: 4242, b: 4343 })
+    );
     expect(ids.size).toBe(0);
   });
 
-  it("ignores sessions from older builds that recorded no parent", () => {
-    const ids = supersededIds([
-      info("a", 1_000, undefined),
-      info("b", 2_000, undefined),
-    ]);
+  it("never groups a session whose parent could not be resolved", () => {
+    const ids = supersededIds(
+      [info("a", 1_000, undefined), info("b", 2_000, undefined)],
+      parents({})
+    );
     expect(ids.size).toBe(0);
   });
+});
 
-  it("does not reap when the recorded parent is gone (the pid may be reused)", () => {
-    const dead = 999_999_999;
-    const ids = supersededIds([
-      info("a", 1_000, dead),
-      info("b", 2_000, dead),
-    ]);
-    expect(ids.size).toBe(0);
+describe("claudeParents", () => {
+  const info = (id: string, pid: number, claudePid?: number) => ({
+    id,
+    name: "s",
+    cwd: "/x",
+    pid,
+    lastActive: 1,
+    claudePid,
+  });
+
+  it("prefers the live parent over the recorded one — a recorded pid can be reused", () => {
+    const got = claudeParents([info("a", 500, 111)], new Map([[500, 222]]));
+    expect(got.get("a")).toBe(222);
+  });
+
+  // The upgrade path: servers started by the previous build recorded nothing,
+  // so without `ps` their ghosts would survive installing the fix.
+  it("resolves a parent for sessions that recorded none", () => {
+    const got = claudeParents([info("a", 500, undefined)], new Map([[500, 222]]));
+    expect(got.get("a")).toBe(222);
+  });
+
+  it("refuses to group orphans reparented to launchd/init", () => {
+    const got = claudeParents([info("a", 500, 1)], new Map([[500, 1]]));
+    expect(got.has("a")).toBe(false);
+  });
+
+  it("falls back to the recorded parent when ps has no answer", () => {
+    const got = claudeParents([info("a", 500, ALIVE)], new Map());
+    expect(got.get("a")).toBe(ALIVE);
+  });
+
+  it("drops a recorded parent whose process is gone", () => {
+    const got = claudeParents([info("a", 500, 999_999_999)], new Map());
+    expect(got.has("a")).toBe(false);
   });
 });
 
 describe("listSessions with a reconnected MCP server", () => {
   it("hides the superseded session so it cannot win routing", () => {
-    fake("old", "repo:main", ALIVE, Date.now() - 60_000, "repo-a1", ALIVE);
-    fake("new", "repo:main", ALIVE2, Date.now(), "repo-a1", ALIVE);
+    const first = siblingPid();
+    const second = siblingPid();
+    fake("old", "repo:main", first, Date.now() - 60_000, "repo-a1");
+    fake("new", "repo:main", second, Date.now(), "repo-a1");
     monitor("old");
     monitor("new");
     expect(listSessions().map((s) => s.id)).toEqual(["new"]);
     expect(getDefaultTarget(listSessions())?.id).toBe("new");
+  });
+
+  // Rows written before this fix shipped carry no claudePid at all; the live
+  // parent is what lets an upgrade clean them up.
+  it("hides a ghost that recorded no parent", () => {
+    const first = siblingPid();
+    const second = siblingPid();
+    fake("old", "repo:main", first, Date.now() - 60_000);
+    fake("new", "repo:main", second, Date.now());
+    expect(listSessions().map((s) => s.id)).toEqual(["new"]);
   });
 });
 
@@ -154,8 +218,8 @@ describe("sessionFate", () => {
   });
 
   it("names the replacement after a reconnect", () => {
-    fake("old", "repo:main", ALIVE, Date.now() - 60_000, undefined, ALIVE);
-    fake("new", "repo:main", ALIVE2, Date.now(), undefined, ALIVE);
+    fake("old", "repo:main", siblingPid(), Date.now() - 60_000);
+    fake("new", "repo:main", siblingPid(), Date.now());
     const fate = sessionFate("old");
     expect(fate.state).toBe("superseded");
     if (fate.state === "superseded") expect(fate.replacement.id).toBe("new");

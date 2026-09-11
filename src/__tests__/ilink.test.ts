@@ -289,6 +289,89 @@ describe("ILinkClient", () => {
     });
   });
 
+  describe("expiry handling", () => {
+    // A rejected request may have been in flight while another session logged
+    // in. Deleting the file then logs the user out of a login that just
+    // succeeded — the same "no session.json" hole, reached from the other end.
+    it("leaves a newer credential alone when a stale request expires", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+
+      // A concurrent login replaces the file while the send is in flight.
+      fs.writeFileSync(
+        SESSION_FILE,
+        JSON.stringify({ ...TEST_SESSION, botToken: "fresh-token" })
+      );
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(mockFetchResponse({ errcode: -14 }))
+      );
+      await expect(client.sendText(TEST_USER_ID, "hi")).rejects.toThrow(
+        "Session expired"
+      );
+
+      const saved = JSON.parse(fs.readFileSync(SESSION_FILE, "utf-8")) as {
+        botToken: string;
+      };
+      expect(saved.botToken).toBe("fresh-token");
+    });
+
+    it("removes the credential that actually expired", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(mockFetchResponse({ errcode: -14 }))
+      );
+      await expect(client.sendText(TEST_USER_ID, "hi")).rejects.toThrow(
+        "Session expired"
+      );
+
+      expect(fs.existsSync(SESSION_FILE)).toBe(false);
+    });
+
+    // getuploadurl is the first authenticated call of an image send; a -14
+    // there used to surface as "no upload URL".
+    it("reports an expired login from the upload-URL request", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+      const image = path.join(testHome, "expiry.png");
+      fs.writeFileSync(image, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(mockFetchResponse({ errcode: -14 }))
+      );
+      await expect(client.sendImage(TEST_USER_ID, image)).rejects.toThrow(
+        "Session expired"
+      );
+    });
+  });
+
+  describe("setSession", () => {
+    // "Logged in" that did not reach the disk is the bug this whole area is
+    // about; a write that fails must not come back as success.
+    it("fails loudly when the session cannot be written", () => {
+      const client = new ILinkClient();
+      const spy = vi.spyOn(fs, "writeFileSync").mockImplementation(() => {
+        throw new Error("EACCES: permission denied");
+      });
+      try {
+        expect(() => client.setSession(TEST_SESSION)).toThrow(
+          "could not be saved"
+        );
+        expect(client.isLoggedIn).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
   describe("sendText", () => {
     it("sends a single message", async () => {
       const client = new ILinkClient();
