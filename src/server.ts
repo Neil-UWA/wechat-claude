@@ -25,6 +25,7 @@ import { loginVerification, verificationNote } from "./login-state.js";
 import { PKG_VERSION } from "./version.js";
 import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js";
 import { isMonitoring, touchHeartbeat } from "./monitoring.js";
+import { recordOutbound } from "./outbox.js";
 import { markReplied } from "./replies.js";
 import { replyFooter, withReplyFooter } from "./reply-footer.js";
 import { routingLines } from "./routing.js";
@@ -393,13 +394,23 @@ server.tool(
     if (!client.isLoggedIn) return NOT_LOGGED_IN;
     try {
       clearTyping(to_user_id);
-      await client.sendText(
-        to_user_id,
-        withReplyFooter(text, replyFooter(sessionId, sessionName.value))
+      const sent = withReplyFooter(
+        text,
+        replyFooter(sessionId, sessionName.value)
       );
+      const messageIds = await client.sendText(to_user_id, sent);
       // Tells the daemon this session actually answered, so its silence
       // watchdog (usage-limit detection) stops tracking the delivery.
       markReplied(sessionId, to_user_id);
+      // And lets it route a quoted ("引用") reply to this message straight
+      // back here, with no "/s <name>" needed.
+      recordOutbound({
+        sessionId,
+        sessionName: sessionName.value,
+        userId: to_user_id,
+        text: sent,
+        messageIds,
+      });
       await client.sendTyping(to_user_id, false);
       return {
         content: [
@@ -439,7 +450,16 @@ server.tool(
       // limit; sendImage sends its caption as a single item and would fail
       // once the footer pushed a long caption over that limit. Same order as
       // sendImage's own caption handling: text first, then the image.
-      if (fullCaption) await client.sendText(to_user_id, fullCaption);
+      if (fullCaption) {
+        const messageIds = await client.sendText(to_user_id, fullCaption);
+        recordOutbound({
+          sessionId,
+          sessionName: sessionName.value,
+          userId: to_user_id,
+          text: fullCaption,
+          messageIds,
+        });
+      }
       await client.sendImage(to_user_id, file_path);
       markReplied(sessionId, to_user_id);
       await client.sendTyping(to_user_id, false);

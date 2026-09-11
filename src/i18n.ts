@@ -74,6 +74,11 @@ type Msgs = {
   deliveredUnmonitored: (name: string) => string;
   deliveredNoneMonitored: (name: string) => string;
   bindingCleared: string;
+  // quoted ("引用") replies
+  quoteSessionGone: (name: string) => string;
+  // How a quoted reply reaches the session: the excerpt it quoted, then what
+  // the user typed.
+  quotedContext: (excerpt: string, body: string) => string;
   // /use
   useBound: (name: string, pid: number, warn: string) => string;
   useNotMonitoredWarn: string;
@@ -185,6 +190,7 @@ const zh: Msgs = {
     "/use 3 — 绑定 3 号，之后消息都发给它",
     "/use off — 取消绑定",
     "/s 3 你好 — 只发这一条给 3 号",
+    "引用某条回复再打字 — 直接发给写那条回复的 session，不用 /s",
     "",
     "🚀 跑任务",
     "/run 修复登录bug — 新开 Claude 执行（默认无人值守）",
@@ -217,6 +223,9 @@ const zh: Msgs = {
   deliveredNoneMonitored: (name) =>
     `已投递到 "${name}"，但当前没有任何 session 在监控消息（需要在 Claude Code 中运行 /wechat），可能不会及时处理。`,
   bindingCleared: "绑定的 session 已关闭，已自动解除绑定，本条消息按默认路由投递。",
+  quoteSessionGone: (name) =>
+    `你引用的那条消息来自 session "${name}"，它已经退出了。本条按默认路由投递。`,
+  quotedContext: (excerpt, body) => `[用户引用了你的这条消息] ${excerpt}\n\n${body}`,
   useBound: (name, pid, warn) =>
     `已绑定 "${name}" (pid ${pid})。之后你的所有消息都会直接发给它。${warn}\n/use off 取消绑定。`,
   useNotMonitoredWarn: "\n注意: 该 session 未在监控消息，回复可能不及时。",
@@ -331,6 +340,7 @@ const en: Msgs = {
     "/use 3 — bind #3; your messages all go there",
     "/use off — unbind",
     "/s 3 hi — send just this one to #3",
+    "Quote a reply, then type — goes straight to the session that wrote it, no /s needed",
     "",
     "🚀 Run tasks",
     "/run fix login bug — start a Claude session (unattended by default)",
@@ -363,6 +373,10 @@ const en: Msgs = {
   deliveredNoneMonitored: (name) =>
     `Delivered to "${name}", but no session is monitoring messages (run /wechat in a Claude Code session), so it may not be handled promptly.`,
   bindingCleared: "The bound session closed; auto-unbound and delivered this message via default routing.",
+  quoteSessionGone: (name) =>
+    `The message you quoted came from session "${name}", which is gone. Routing this one normally.`,
+  quotedContext: (excerpt, body) =>
+    `[the user quoted this message of yours] ${excerpt}\n\n${body}`,
   useBound: (name, pid, warn) =>
     `Bound to "${name}" (pid ${pid}). Your messages now go straight there.${warn}\n/use off to unbind.`,
   useNotMonitoredWarn: "\nNote: this session isn't monitoring messages; replies may lag.",

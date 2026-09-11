@@ -80,6 +80,7 @@ Send these from WeChat to control routing:
 | `/s <number> <message>` | Send message to session by its number. Numbers are stable for a session's lifetime — they never shift when other sessions open or close (retired numbers aren't reused; numbering resets once all sessions are gone) |
 | `/use <number\|name\|pid>` | Bind your chat to one session: every plain message goes straight to it (survives daemon restarts). `/use off` unbinds; `/use` shows the current binding. Closing the bound session clears the binding automatically |
 | `/s <name> <message>` | Send message to session by name (fuzzy match; if ambiguous, prefers the monitored / most recently active one) |
+| *(quote a reply, then type)* | **Quote** a session's reply in WeChat and write your answer: the message goes to the session that wrote the quoted reply — no `/s`, and your binding is left alone (see [Quoted replies](#quoted-replies)) |
 | `/s <pid> <message>` | Send message to session by pid (duplicate names are listed as `name#pid`) |
 | `/run [--safe] [dir] <task>` | Start a new Claude session in tmux to run a task. The launched session is instructed to send its result back to WeChat. Runs unattended by default (`--dangerously-skip-permissions`); pass `--safe` for `--permission-mode acceptEdits`, where bash commands wait for confirmation at the computer. The first unattended run accepts skip-permissions mode in `~/.claude.json` on your behalf — a detached session cannot answer Claude Code's one-time dialog — and says so in its reply; see [SECURITY.md](SECURITY.md) |
 | `/runs` | List running `/run` task sessions |
@@ -207,6 +208,7 @@ with `SendMessage`, tells you on WeChat which session it went to and how to
 ├── session.json          # ilink bot token (persisted login)
 ├── config.json           # optional settings (e.g. repoDirs for /run)
 ├── bindings.json         # /use bindings (WeChat user -> session)
+├── outbox.json           # recent replies per session (how a quoted reply finds its session; 24h)
 ├── session-numbers.json  # stable session number registry
 ├── media/                # downloaded incoming images (7-day retention)
 ├── context_tokens.json   # shared context tokens (daemon ↔ MCP server)
@@ -270,6 +272,8 @@ server's pid.
 2. Incoming messages are parsed and routed:
    - Commands like `/sessions`, `/run`, `/close`, `/use` are handled by the daemon
    - `/s <target> <msg>` routes to a specific session's inbox
+   - A message quoting a session's reply goes to that session (see
+     [Quoted replies](#quoted-replies))
    - A plain message goes to your bound session (`/use`), else the most
      recently active session that is `👀 monitoring`
 3. When a message is routed, the daemon starts a "typing" indicator on WeChat
@@ -290,10 +294,41 @@ how to answer it directly:
 —— from naming (#4) · reply directly: /s 4 <message>
 ```
 
-The number is the stable one from `/ls`, fixed for the session's lifetime. When
+The number is the stable one from `/ls`, fixed for the session's lifetime. It
+doubles as the fallback for [quoted replies](#quoted-replies): a quote that kept
+the footer names its session outright. When
 several sessions answer into the same chat you no longer have to `/ls` and guess
 who said what. To turn it off, add `"replyFooter": false` to
 `~/.claude/wechat/config.json`.
+
+## Quoted replies
+
+With several sessions talking into one WeChat chat, `/s <number>` is precise but
+wordy. The quick way is WeChat's own **quote**: long-press (or right-click) a
+session's reply → Quote → type your answer. That message is delivered to the
+session that wrote the quoted reply.
+
+- It overrides both your binding (`/use`) and default routing, but **only for
+  that one message** — quoting is "just this one, to you", not a rebinding
+- The receiving session is shown a one-line excerpt of what you quoted, so a
+  reply like "make it blue" arrives with the context it needs
+- Quoting a command's output (an `/ls` listing, say) routes nowhere special; the
+  usual rules apply
+- If the session that wrote the quoted message is gone, WeChat tells you so and
+  the message is routed normally
+
+**How it is recognised**: whenever a session replies, the MCP server records
+what went out in `outbox.json` (session id, name, and the text — kept 24 hours,
+200 entries at most). On a quoted message the daemon matches, in order, the
+quoted message's id (some clients send one), then the text (a quote the client
+truncated matches on its prefix), then the [reply footer](#reply-footer) inside
+the quoted text — which spells out `/s <number>` itself. So it still works with
+the footer turned off (`"replyFooter": false`), just without the last fallback.
+
+If a quote doesn't route where you expect, run the daemon with
+`WECHAT_DEBUG_RAW=1`: every incoming message is dumped raw to
+`~/.claude/wechat/raw.log`, so you can see what your WeChat client actually
+sent.
 
 ## Language
 

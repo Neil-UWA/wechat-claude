@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { withFileLock } from "./file-lock.js";
 import { INBOX_DIR } from "./paths.js";
 import type { PendingMessage } from "./types.js";
 
@@ -7,37 +8,10 @@ function inboxFile(sessionId: string): string {
   return path.join(INBOX_DIR, `${sessionId}.json`);
 }
 
-const LOCK_TIMEOUT_MS = 5000;
-const LOCK_SPINS = 100;
-
-// Serialize inbox access with an atomic mkdir lock so the daemon's append and
-// the MCP server's drain can't interleave (which would otherwise lose or
-// duplicate messages). Critical sections are tiny (one file read + write).
+// Serialize inbox access so the daemon's append and the MCP server's drain
+// can't interleave (which would otherwise lose or duplicate messages).
 function withInboxLock<T>(sessionId: string, fn: () => T): T {
-  const lock = `${inboxFile(sessionId)}.lock`;
-  for (let i = 0; i < LOCK_SPINS; i++) {
-    try {
-      fs.mkdirSync(lock);
-    } catch {
-      // Lock held — steal it if it's stale, otherwise wait a beat and retry.
-      try {
-        if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_TIMEOUT_MS) {
-          fs.rmdirSync(lock);
-        }
-      } catch {}
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
-      continue;
-    }
-    try {
-      return fn();
-    } finally {
-      try {
-        fs.rmdirSync(lock);
-      } catch {}
-    }
-  }
-  // Couldn't acquire within the budget — proceed unlocked rather than drop.
-  return fn();
+  return withFileLock(inboxFile(sessionId), fn);
 }
 
 function loadArray(file: string): PendingMessage[] {

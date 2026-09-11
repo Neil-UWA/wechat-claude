@@ -73,6 +73,7 @@ wechat-claude daemon           # 前台运行 / 交给你自己的进程管理�
 | `/s <编号> <消息>` | 按编号发消息给某个 session。编号在 session 生命周期内固定不变 —— 其他 session 开启或关闭都不会让它移位（退役的编号不会被复用；所有 session 都消失后编号重新计数） |
 | `/use <编号\|名字\|pid>` | 把你的聊天绑定到某个 session：之后每条不带前缀的消息都直接发给它（daemon 重启后依然有效）。`/use off` 解绑；`/use` 查看当前绑定。被绑定的 session 关闭时会自动解绑 |
 | `/s <名字> <消息>` | 按名字发消息（模糊匹配；有歧义时优先选正在监控的 / 最近活跃的） |
+| *（引用某条回复再打字）* | 在微信里**引用**某个 session 的回复然后直接写你要说的话，这条消息就会发给写那条回复的 session —— 不用 `/s`，也不用改绑定（见[引用回复](#引用回复)） |
 | `/s <pid> <消息>` | 按 pid 发消息（同名的会以 `名字#pid` 形式列出） |
 | `/run [--safe] [目录] <任务>` | 在 tmux 里起一个新的 Claude session 执行任务。被启动的 session 会被要求把结果发回微信。默认无人值守运行（`--dangerously-skip-permissions`）；加 `--safe` 则用 `--permission-mode acceptEdits`，此时 bash 命令会在电脑端等待确认。第一次无人值守运行时，会替你在 `~/.claude.json` 里接受免确认模式 —— detached 的 session 无法回答 Claude Code 的一次性对话框 —— 并在回复里说明；详见 [SECURITY.md](SECURITY.md) |
 | `/runs` | 列出运行中的 `/run` 任务 session |
@@ -176,6 +177,7 @@ session 用 `SendMessage` 找它时要用的（见 `ListAgents`）。`wechat_sta
 ├── session.json          # ilink 机器人 token（持久化登录）
 ├── config.json           # 可选配置（例如 /run 用的 repoDirs）
 ├── bindings.json         # /use 绑定关系（微信用户 -> session）
+├── outbox.json           # 各 session 最近发出的回复（引用回复靠它定位 session，留 24 小时）
 ├── session-numbers.json  # 稳定 session 编号注册表
 ├── media/                # 下载的图片（保留 7 天）
 ├── context_tokens.json   # 共享上下文 token（daemon ↔ MCP server）
@@ -237,6 +239,7 @@ wechat-claude daemon restart
 2. 收到的消息被解析并路由：
    - `/sessions`、`/run`、`/close`、`/use` 这类命令由 daemon 自己处理
    - `/s <目标> <消息>` 路由到指定 session 的 inbox
+   - 引用某个 session 回复的消息，发给写那条回复的 session（见[引用回复](#引用回复)）
    - 不带前缀的消息发给你绑定的 session（`/use`），否则发给最近活跃且处于 `👀 监控中`
      的那个
 3. 消息被路由时，daemon 会在微信上打开"正在输入"指示
@@ -255,9 +258,31 @@ session 发到微信的每条回复（`wechat_send_text`，以及 `wechat_send_i
 —— 来自 naming（#4）· 直接回复: /s 4 <消息>
 ```
 
-编号就是 `/ls` 里的稳定编号，整个 session 生命周期内不变。多个 session 往同一个聊天里
+编号就是 `/ls` 里的稳定编号，整个 session 生命周期内不变。它同时是[引用回复](#引用回复)
+的兜底线索：引用里带着尾注，daemon 就一定认得出是谁说的。多个 session 往同一个聊天里
 回复时，不用先 `/ls` 再猜是谁说的。不想要的话在 `~/.claude/wechat/config.json` 里加
 `"replyFooter": false`。
+
+## 引用回复
+
+多个 session 在同一个微信聊天里说话时，`/s <编号>` 是准确但啰嗦的办法。更快的办法是用微信
+自带的**引用**：长按（或右键）某个 session 的回复 → 引用 → 写下你要说的话发出去。这条消息
+就直接投递给写那条回复的 session。
+
+- 绑定（`/use`）和默认路由都会被这一条让路，但**只让这一条** —— 引用是"就这一条发给它"，
+  不会改变你的绑定
+- 收到的 session 会看到你引用了它的哪句话（一行摘要），所以"这个改成蓝色"这种话也有上下文
+- 引用一条命令的输出（比如 `/ls` 的列表）不会路由到任何地方，按原来的规则走
+- 如果写那条回复的 session 已经退出了，微信里会直接告诉你，并按默认路由投递
+
+**是怎么认出来的**：session 每次回复微信时，MCP server 会把发出去的内容记进
+`outbox.json`（session id、名字、原文，只留 24 小时、最多 200 条）。daemon 收到引用消息时，
+先按被引用消息的 id 匹配（有的客户端会带），匹配不上就按原文匹配（被客户端截断的引用按前缀
+匹配），再匹配不上就读被引用内容里的[回复尾注](#回复尾注) —— 尾注里就写着 `/s <编号>`。
+所以尾注关掉（`"replyFooter": false`）也仍然能用，只是少了最后一层兜底。
+
+如果引用没有按预期路由，把 daemon 用 `WECHAT_DEBUG_RAW=1` 跑起来，每条收到的原始消息会
+写进 `~/.claude/wechat/raw.log`，可以看到你的微信客户端到底发了什么。
 
 ## 语言
 

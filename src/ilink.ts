@@ -16,6 +16,7 @@ import type {
   WeixinMessage,
 } from "./types.js";
 import { clearLoginVerified, markLoginVerified } from "./login-state.js";
+import { extractQuote } from "./quote.js";
 import { decryptCdnMedia, extractText, imageExtension } from "./utils.js";
 
 export const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
@@ -47,6 +48,24 @@ function errorCodes(body: unknown): number[] {
   const data = body as { ret?: unknown; errcode?: unknown };
   return [data.ret, data.errcode].filter(
     (c): c is number => typeof c === "number"
+  );
+}
+
+// The id the server assigned to a message we just sent, if it reported one.
+// Not documented and not always present, so every caller has to cope without
+// it; where it exists it is the one exact way to recognise a quote of that
+// message later.
+function sentMessageId(body: unknown): string | undefined {
+  if (typeof body !== "object" || body === null) return undefined;
+  const data = body as Record<string, unknown>;
+  const candidates = [data.message_id, data.msg_id, data.svr_id];
+  const nested = data.msg;
+  if (typeof nested === "object" && nested !== null) {
+    const inner = nested as Record<string, unknown>;
+    candidates.push(inner.message_id, inner.msg_id, inner.svr_id);
+  }
+  return candidates.find(
+    (c): c is string => typeof c === "string" && c !== ""
   );
 }
 
@@ -357,7 +376,10 @@ export class ILinkClient {
     return data.msgs ?? [];
   }
 
-  async sendText(toUserId: string, text: string): Promise<void> {
+  // Returns the server ids of the messages actually sent, when the API
+  // reported any. The caller records them so a later quoted ("引用") reply can
+  // be traced back to the session that wrote the quoted message.
+  async sendText(toUserId: string, text: string): Promise<string[]> {
     if (!this.session) throw new Error("Not logged in");
 
     let contextToken = this.contextTokens.get(toUserId);
@@ -376,6 +398,7 @@ export class ILinkClient {
       chunks.push(text.slice(i, i + TEXT_LIMIT));
     }
 
+    const messageIds: string[] = [];
     for (const chunk of chunks) {
       const textItem: TextItem = { type: 1, text_item: { text: chunk } };
       const res = await fetch(`${this.baseUrl}/ilink/bot/sendmessage`, {
@@ -396,11 +419,25 @@ export class ILinkClient {
       });
 
       if (!res.ok) throw new Error(`sendmessage failed: ${res.status}`);
+      const body = await this.readBody(res);
       // A revoked token comes back as HTTP 200 with an error code in the
       // body; without this the send is reported as delivered and the reply
       // is simply lost.
-      this.checkSendResponse(await this.readCodes(res));
+      this.checkSendResponse(errorCodes(body));
+      const id = sentMessageId(body);
+      if (id) messageIds.push(id);
       markLoginVerified();
+    }
+    return messageIds;
+  }
+
+  // The parsed response body, or undefined when there wasn't one (empty, or
+  // not JSON) — which is not an error in itself.
+  private async readBody(res: Response): Promise<unknown> {
+    try {
+      return await res.json();
+    } catch {
+      return undefined;
     }
   }
 
@@ -654,13 +691,25 @@ export class ILinkClient {
       const text = extractText(msg);
       if (!text) continue;
 
+      // Same treatment as the daemon's loop: a quoted reply's text is the
+      // quote bubble plus what the user typed, and only the latter is the
+      // message.
+      const quote = extractQuote(msg, text);
+
       const pending: PendingMessage = {
         id: msg.message_id,
         fromUserId: msg.from_user_id,
-        text,
+        text: quote?.body ?? text,
         contextToken: msg.context_token,
         timestamp: msg.create_time_ms,
         rawItems: msg.item_list,
+        quote: quote
+          ? {
+              quotedText: quote.quotedText,
+              quotedMessageId: quote.quotedMessageId,
+              fromText: quote.fromText,
+            }
+          : undefined,
       };
 
       newMessages.push(pending);

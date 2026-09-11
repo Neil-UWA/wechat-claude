@@ -16,9 +16,16 @@ export const EXPIRED_FLAG_FILE = path.join(WECHAT_DIR, "expired.flag");
 // evidence that the cached bot token is still valid (see login-state.ts).
 export const LOGIN_VERIFIED_FILE = path.join(WECHAT_DIR, "login-verified");
 export const CONFIG_FILE = path.join(WECHAT_DIR, "config.json");
+// Raw incoming messages, written only when WECHAT_DEBUG_RAW=1. The API's
+// message shape is documented only in part — quoted replies in particular — so
+// being able to see exactly what arrived turns guesswork into diagnosis.
+export const RAW_LOG_FILE = path.join(WECHAT_DIR, "raw.log");
 // Per-user timestamp of the last reply a session actually sent back to WeChat,
 // so the daemon can tell "session answered" from "session went silent".
 export const REPLIES_DIR = path.join(WECHAT_DIR, "replies");
+// What each session last said to each WeChat user, so a quoted reply can be
+// routed back to the session that wrote the quoted message (see outbox.ts).
+export const OUTBOX_FILE = path.join(WECHAT_DIR, "outbox.json");
 // Drop a file here to make a session's watcher re-announce its pending inbox
 // (used after a usage limit lifts, when the original announcement is long gone).
 export const NUDGE_DIR = path.join(WECHAT_DIR, "nudge");

@@ -164,6 +164,19 @@ export type Session = {
   baseUrl: string;
 };
 
+// A quoted ("引用") reply's reference to the message it answers. See quote.ts.
+export type Quote = {
+  // The quoted message's text, as best it can be recovered. May be truncated
+  // by the sending client, and may still carry a "nickname:" prefix.
+  quotedText: string;
+  // The quoted message's server id, when the API gave us a structured quote.
+  quotedMessageId?: string;
+  // Whether the quote was carried in the message text (and so was stripped out
+  // of it). The receiving session is shown an excerpt in that case even when
+  // the quote resolves to nothing, because the context is otherwise lost.
+  fromText?: boolean;
+};
+
 export type PendingMessage = {
   id: string;
   fromUserId: string;
@@ -171,4 +184,8 @@ export type PendingMessage = {
   contextToken: string;
   timestamp: number;
   rawItems: MessageItem[];
+  // Set when the user quoted a message: `text` is then only what they typed,
+  // and this says what they quoted — which is how the daemon routes the reply
+  // back to the session that wrote it, without a "/s <name>" prefix.
+  quote?: Quote;
 };
