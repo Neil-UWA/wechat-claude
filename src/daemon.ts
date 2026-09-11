@@ -3,7 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
-import { ILinkClient } from "./ilink.js";
+import {
+  ILinkClient,
+  SESSION_EXPIRED,
+  SESSION_REPLACED,
+} from "./ilink.js";
 import {
   clearBinding,
   clearBindingsToSession,
@@ -1193,11 +1197,22 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
+      // Someone logged in again while this poll was in flight: the rejection
+      // belongs to the old token, not to the credential now on disk (which
+      // the client has already adopted). Carry on with a fresh cursor — the
+      // old one belongs to the dead login — instead of declaring an expiry
+      // and leaving the new login with no poller.
+      if (errMsg.includes(SESSION_REPLACED)) {
+        log("Login was replaced by a newer one. Continuing with it.");
+        client.setUpdatesCursor("");
+        setCursor("");
+        continue;
+      }
       // "Not logged in" means the credential was cleared out from under the
       // poll — a send that hit the same revoked token gets there first — and
       // is the same failure, not a transient one to retry every 5s forever.
       if (
-        errMsg.includes("Session expired") ||
+        errMsg.includes(SESSION_EXPIRED) ||
         errMsg.includes("Not logged in")
       ) {
         log(`Login is no longer valid (${errMsg}). Exiting.`);

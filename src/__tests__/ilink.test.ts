@@ -308,14 +308,18 @@ describe("ILinkClient", () => {
         "fetch",
         vi.fn().mockResolvedValue(mockFetchResponse({ errcode: -14 }))
       );
+      // Reported as a replacement, not an expiry: callers must not flag a
+      // credential that is perfectly good, and the daemon must keep polling.
       await expect(client.sendText(TEST_USER_ID, "hi")).rejects.toThrow(
-        "Session expired"
+        "replaced by a newer login"
       );
 
       const saved = JSON.parse(fs.readFileSync(SESSION_FILE, "utf-8")) as {
         botToken: string;
       };
       expect(saved.botToken).toBe("fresh-token");
+      // And the newer credential is adopted, so a retry uses it.
+      expect(client.isLoggedIn).toBe(true);
     });
 
     it("removes the credential that actually expired", async () => {

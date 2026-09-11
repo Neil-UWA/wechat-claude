@@ -19,6 +19,15 @@ import { clearLoginVerified, markLoginVerified } from "./login-state.js";
 import { decryptCdnMedia, extractText, imageExtension } from "./utils.js";
 
 export const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
+// The credential this client used is dead and was cleared: the user has to
+// scan a QR code again.
+export const SESSION_EXPIRED = "Session expired, please login again";
+// The request was rejected, but the token on disk is no longer the one we
+// used — another session (or the CLI) logged in while this call was in
+// flight. Nothing is wrong with that newer login, and callers must not flag
+// it as expired; the fresh credential has been adopted, so retry.
+export const SESSION_REPLACED =
+  "Session was replaced by a newer login — retry with the new credential";
 export const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
 const BASE_INFO = { channel_version: "1.0.0" } as const;
 const TEXT_LIMIT = 2000;
@@ -143,12 +152,21 @@ export class ILinkClient {
   }
 
   // Shared by every path that learns the credential is dead (errcode -14).
-  private handleExpiredSession(): void {
+  // Returns which of the two situations it was, because they need opposite
+  // responses: an expiry means stop and ask the user to log in again, while a
+  // replacement means pick up the newer credential and carry on.
+  private handleExpiredSession(): typeof SESSION_EXPIRED | typeof SESSION_REPLACED {
     const failed = this.session?.botToken;
     this.session = null;
     // Only forget the verification stamp if this really was the live
     // credential; a concurrent login owns both the file and the stamp.
-    if (this.clearSessionFile(failed)) clearLoginVerified();
+    if (this.clearSessionFile(failed)) {
+      clearLoginVerified();
+      return SESSION_EXPIRED;
+    }
+    // A newer token is on disk — adopt it rather than declaring an expiry.
+    this.tryRestoreSession(true);
+    return SESSION_REPLACED;
   }
   private updatesCursor = "";
   private pendingMessages: PendingMessage[] = [];
@@ -320,8 +338,7 @@ export class ILinkClient {
       (c): c is number => typeof c === "number"
     );
     if (codes.includes(-14)) {
-      this.handleExpiredSession();
-      throw new Error("Session expired, please login again");
+      throw new Error(this.handleExpiredSession());
     }
     const errCode = codes.find((c) => c !== 0);
     if (errCode !== undefined) {
@@ -399,8 +416,7 @@ export class ILinkClient {
 
   private checkSendResponse(codes: number[], what = "sendmessage"): void {
     if (codes.includes(-14)) {
-      this.handleExpiredSession();
-      throw new Error("Session expired, please login again");
+      throw new Error(this.handleExpiredSession());
     }
     const errCode = codes.find((c) => c !== 0);
     if (errCode !== undefined) {
@@ -678,7 +694,7 @@ export class ILinkClient {
         } catch (err) {
           if (!this.polling) break;
           const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes("Session expired")) {
+          if (msg.includes(SESSION_EXPIRED)) {
             this.polling = false;
             break;
           }

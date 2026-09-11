@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,8 +10,17 @@ import {
   claudeRecordsForSessions,
   ownClaudeSessionName,
 } from "./claude-sessions.js";
-import { isDaemonRunning } from "./health.js";
-import { ILinkClient } from "./ilink.js";
+import {
+  DAEMON_PATH,
+  ensureDaemonRunning,
+  isDaemonRunning,
+  restartDaemonForNewLogin,
+} from "./daemon-control.js";
+import {
+  ILinkClient,
+  SESSION_EXPIRED,
+  SESSION_REPLACED,
+} from "./ilink.js";
 import { loginVerification, verificationNote } from "./login-state.js";
 import { PKG_VERSION } from "./version.js";
 import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js";
@@ -39,7 +47,6 @@ import {
   writeSessionFile,
 } from "./sessions.js";
 
-const DAEMON_PATH = fileURLToPath(new URL("./daemon.js", import.meta.url));
 
 const WATCHER_PATH = fileURLToPath(new URL("./watch-inbox.js", import.meta.url));
 
@@ -51,32 +58,17 @@ function detectSessionName(): string {
   return detectSessionNameFor(process.cwd());
 }
 
-// Spawn the daemon detached if it is not already running. The daemon has its
-// own pid-file singleton guard, so a concurrent spawn from another session is
-// harmless. Returns true if the daemon is running when we're done.
-async function ensureDaemonRunning(): Promise<{
+// Start the daemon if nothing is polling. Shared with the CLI so both agree on
+// the rules (launchd owns it where installed; a pid file is only trusted once
+// the process behind it is confirmed to be a daemon).
+async function ensureDaemon(): Promise<{
   running: boolean;
   autoStarted: boolean;
 }> {
   if (isDaemonRunning()) return { running: true, autoStarted: false };
   if (!client.isLoggedIn) return { running: false, autoStarted: false };
-  try {
-    const logFd = fs.openSync(DAEMON_LOG_FILE, "a");
-    const child = spawn(process.execPath, [DAEMON_PATH], {
-      detached: true,
-      stdio: ["ignore", logFd, logFd],
-    });
-    child.unref();
-    fs.closeSync(logFd);
-  } catch {
-    return { running: false, autoStarted: false };
-  }
-  const deadline = Date.now() + 3000;
-  while (Date.now() < deadline) {
-    if (isDaemonRunning()) return { running: true, autoStarted: true };
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return { running: false, autoStarted: false };
+  const ok = await ensureDaemonRunning();
+  return { running: ok, autoStarted: ok };
 }
 
 function isLoginExpired(): boolean {
@@ -169,7 +161,20 @@ type ToolResult = {
 // otherwise, and say what fixes it.
 function sendFailure(err: unknown): ToolResult {
   const msg = err instanceof Error ? err.message : String(err);
-  if (msg.includes("Session expired")) {
+  // A newer login landed mid-send. Flagging expiry here would mark a perfectly
+  // good credential dead and send the user back to a QR code for nothing.
+  if (msg.includes(SESSION_REPLACED)) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: "Send failed: another session logged in to WeChat while this message was in flight, so this send used a credential that is no longer current. The new login has been picked up — send again.",
+        },
+      ],
+      isError: true,
+    };
+  }
+  if (msg.includes(SESSION_EXPIRED)) {
     try {
       fs.writeFileSync(EXPIRED_FLAG_FILE, String(Date.now()));
     } catch {}
@@ -280,12 +285,15 @@ server.tool(
         try {
           fs.unlinkSync(EXPIRED_FLAG_FILE);
         } catch {}
-        const daemon = await ensureDaemonRunning();
-        const daemonNote = daemon.running
-          ? daemon.autoStarted
-            ? "Daemon auto-started."
-            : "Daemon already running."
-          : `Daemon could not be started — run: wechat-claude daemon (or node ${DAEMON_PATH})`;
+        // Restart, never "start if absent": a daemon that is already running
+        // holds the credential it read at startup and never re-reads
+        // session.json, so it would keep polling with the token this login
+        // just replaced — and exit when that one is rejected, leaving the new
+        // login with nothing polling.
+        const restarted = await restartDaemonForNewLogin();
+        const daemonNote = restarted
+          ? "Daemon restarted with the new login."
+          : `Daemon could not be started — run: wechat-claude daemon start (or node ${DAEMON_PATH})`;
         return {
           content: [
             {
@@ -511,7 +519,7 @@ server.tool(
   "Check WeChat connection, daemon status, and active sessions. Call at session start to see if WeChat monitoring is available.",
   {},
   async () => {
-    const daemon = await ensureDaemonRunning();
+    const daemon = await ensureDaemon();
     // Running /wechat is the user turning their attention to this session, so
     // it should become the default target for plain messages once its watcher
     // is up (the default is the most recently active monitored session).

@@ -51,7 +51,11 @@ const ALIVE2 = process.ppid;
 const children: ChildProcess[] = [];
 
 function siblingPid(): number {
-  const child = spawn("sleep", ["30"], { stdio: "ignore" });
+  // A node child rather than `sleep`, so the fixture runs anywhere the tests
+  // do — process.execPath is by definition present.
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+    stdio: "ignore",
+  });
   children.push(child);
   if (child.pid === undefined) throw new Error("could not spawn a test process");
   return child.pid;
