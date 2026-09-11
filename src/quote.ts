@@ -237,7 +237,15 @@ export function matchOutbound(
     return candidates.some((c) => textMatches(c, sent));
   });
   if (byText) return byText;
-  return quote.quotedAt ? matchByTime(quote.quotedAt, records) : undefined;
+  if (!quote.quotedAt) return undefined;
+  // Time is a fallback for records written before ids were captured — never a
+  // second opinion on an id that simply didn't match. When ids are being
+  // recorded and none of them is this one, the quoted message is not a
+  // session's at all (the user quoting their own message, say), and guessing
+  // by time would hand it to whichever session happened to be talking then.
+  const haveIds = records.some((r) => (r.messageIds?.length ?? 0) > 0);
+  if (quote.quotedMessageId && haveIds) return undefined;
+  return matchByTime(quote.quotedAt, records);
 }
 
 // Every reply carries a trailer naming its session ("—— 来自 backend（#3）· 直接

@@ -214,6 +214,19 @@ describe("matchOutbound", () => {
     expect(got?.sessionId).toBe("100");
   });
 
+  it("does not fall back to time when ids are being recorded and none matched", () => {
+    // The user quoted their own message: it has an id, ours are recorded, and
+    // none of them is it. Whichever session happened to answer at that moment
+    // must not be handed the reply.
+    const answered = record({ messageIds: ["out-1"], at: 1789142249500 });
+    expect(
+      matchOutbound(
+        { quotedText: "", quotedMessageId: "not-ours", quotedAt: 1789142249000 },
+        [answered]
+      )
+    ).toBeUndefined();
+  });
+
   it("does not match a reply sent minutes from the quoted message", () => {
     const rec = record({ messageIds: [], at: 1789142249000 - 5 * 60_000 });
     expect(
