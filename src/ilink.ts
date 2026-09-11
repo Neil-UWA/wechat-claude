@@ -42,6 +42,14 @@ function generateUin(): string {
   return Buffer.from(String(n)).toString("base64");
 }
 
+function parseBody(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
 // `ret` and `errcode` both appear across this API, sometimes together.
 function errorCodes(body: unknown): number[] {
   if (typeof body !== "object" || body === null) return [];
@@ -51,22 +59,17 @@ function errorCodes(body: unknown): number[] {
   );
 }
 
-// The id the server assigned to a message we just sent, if it reported one.
-// Not documented and not always present, so every caller has to cope without
-// it; where it exists it is the one exact way to recognise a quote of that
-// message later.
-function sentMessageId(body: unknown): string | undefined {
-  if (typeof body !== "object" || body === null) return undefined;
-  const data = body as Record<string, unknown>;
-  const candidates = [data.message_id, data.msg_id, data.svr_id];
-  const nested = data.msg;
-  if (typeof nested === "object" && nested !== null) {
-    const inner = nested as Record<string, unknown>;
-    candidates.push(inner.message_id, inner.msg_id, inner.svr_id);
-  }
-  return candidates.find(
-    (c): c is string => typeof c === "string" && c !== ""
-  );
+// The id the server assigned to a message we just sent — the one exact way to
+// recognise a quote of that message later (a quoted reply carries the quoted
+// message's id and nothing else).
+//
+// Read out of the raw response text, not the parsed body, on purpose: the API
+// sends it as a bare JSON number of 19 digits ({"message_id":7504206776136071048})
+// and JSON.parse rounds anything past 2^53, which would leave us matching
+// quotes against an id the server never issued.
+export function sentMessageId(raw: string): string | undefined {
+  const m = raw.match(/"(?:message_id|msg_id|svr_id)"\s*:\s*"?(\d+)"?/);
+  return m?.[1];
 }
 
 function generateClientId(): string {
@@ -419,25 +422,25 @@ export class ILinkClient {
       });
 
       if (!res.ok) throw new Error(`sendmessage failed: ${res.status}`);
-      const body = await this.readBody(res);
+      const raw = await this.readRaw(res);
       // A revoked token comes back as HTTP 200 with an error code in the
       // body; without this the send is reported as delivered and the reply
       // is simply lost.
-      this.checkSendResponse(errorCodes(body));
-      const id = sentMessageId(body);
+      this.checkSendResponse(errorCodes(parseBody(raw)));
+      const id = sentMessageId(raw);
       if (id) messageIds.push(id);
       markLoginVerified();
     }
     return messageIds;
   }
 
-  // The parsed response body, or undefined when there wasn't one (empty, or
-  // not JSON) — which is not an error in itself.
-  private async readBody(res: Response): Promise<unknown> {
+  // The response body as text. Unreadable bodies are "" — an empty body is not
+  // an error in itself, and the codes check treats it as "nothing to object to".
+  private async readRaw(res: Response): Promise<string> {
     try {
-      return await res.json();
+      return await res.text();
     } catch {
-      return undefined;
+      return "";
     }
   }
 

@@ -1089,6 +1089,9 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   // the user pointing at a session, and it is a one-off, so the binding is
   // left alone.
   let quoted: SessionInfo | undefined;
+  // What the quoted message said. WeChat's quote carries only an id and a
+  // timestamp, so this comes from the outbox record we matched it to.
+  let quotedText = msg.quote?.quotedText ?? "";
   if (msg.quote) {
     const resolved = resolveQuoteTarget(msg.quote, {
       records: listOutbound(msg.fromUserId),
@@ -1097,6 +1100,7 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     });
     if (resolved?.kind === "session") {
       quoted = resolved.session;
+      quotedText = resolved.quotedText ?? quotedText;
     } else if (resolved?.kind === "gone") {
       sendReply(m.quoteSessionGone(resolved.name));
     }
@@ -1120,7 +1124,7 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   // Hand the session a short excerpt of what was quoted: without it a reply
   // like "改成蓝色" arrives with no idea which of its own messages it answers.
   // Nothing to excerpt (an image, say) means nothing to add.
-  const excerpt = msg.quote ? quoteExcerpt(msg.quote.quotedText) : "";
+  const excerpt = msg.quote ? quoteExcerpt(quotedText) : "";
   const delivered: PendingMessage =
     excerpt !== "" && (msg.quote?.fromText || quoted)
       ? { ...msg, text: m.quotedContext(excerpt, msg.text) }

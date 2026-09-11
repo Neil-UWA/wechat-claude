@@ -317,13 +317,26 @@ session that wrote the quoted reply.
 - If the session that wrote the quoted message is gone, WeChat tells you so and
   the message is routed normally
 
-**How it is recognised**: whenever a session replies, the MCP server records
-what went out in `outbox.json` (session id, name, and the text — kept 24 hours,
-200 entries at most). On a quoted message the daemon matches, in order, the
-quoted message's id (some clients send one), then the text (a quote the client
-truncated matches on its prefix), then the [reply footer](#reply-footer) inside
-the quoted text — which spells out `/s <number>` itself. So it still works with
-the footer turned off (`"replyFooter": false`), just without the last fallback.
+**How it is recognised**: WeChat's quote is a `ref_msg` carrying the quoted
+message's **id and timestamp — and no text at all**. The send API does hand back
+the id of each message we send, so whenever a session replies the MCP server
+records that id along with the text in `outbox.json` (session id, name, text,
+message ids — kept 24 hours, 200 entries at most), and an incoming quote is
+looked up by id.
+
+(That id is 19 digits, past 2^53, so `JSON.parse` rounds its last digits away —
+it is read out of the raw response text with a regex instead. Once parsed it
+cannot be recovered.)
+
+Match order: the quoted message's id, then the quoted text (some clients put the
+quote in the message text; a truncated one matches on its prefix), then the
+[reply footer](#reply-footer) inside that text — which spells out `/s <number>`
+itself — and finally a send whose time is within 15 seconds of when the quoted
+message was created. So it still works with the footer turned off
+(`"replyFooter": false`), or for a reply sent by a version that recorded no id.
+
+Since WeChat sends no quoted text, the "you quoted this" excerpt handed to the
+session is reconstructed from the text kept in `outbox.json`.
 
 If a quote doesn't route where you expect, run the daemon with
 `WECHAT_DEBUG_RAW=1`: every incoming message is dumped raw to

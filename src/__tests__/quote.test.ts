@@ -109,6 +109,41 @@ describe("stripQuotedNickname", () => {
 });
 
 describe("extractStructuredQuote", () => {
+  // Exactly the shape WeChat sends: the quote hangs off the *item*, carries an
+  // id and a timestamp, and has no text whatsoever.
+  const wechatQuote = {
+    item_list: [
+      {
+        type: 1,
+        msg_id: "v1:7616463724773447674",
+        ref_msg: {
+          message_item: {
+            type: 0,
+            create_time_ms: 1789142249000,
+            update_time_ms: 1789142249000,
+            is_completed: true,
+            msg_id: "7504206488704563208",
+            button_item_list: [],
+            at_bot_username_list: [],
+          },
+        },
+        text_item: { text: "消息来了" },
+      },
+    ],
+  };
+
+  it("reads WeChat's own ref_msg, id and time and all", () => {
+    expect(extractStructuredQuote(wechatQuote)).toEqual({
+      quotedText: "",
+      quotedMessageId: "7504206488704563208",
+      quotedAt: 1789142249000,
+    });
+  });
+
+  it("does not mistake the item's own id for the quoted one", () => {
+    expect(extractStructuredQuote(wechatQuote)?.quotedMessageId).not.toContain("v1:");
+  });
+
   it("finds a quote under a refer-ish key whatever it is called", () => {
     expect(
       extractStructuredQuote(
@@ -170,6 +205,30 @@ describe("matchOutbound", () => {
     expect(got?.sessionId).toBe("100");
   });
 
+  it("matches on the time when the id is unknown and there is no text", () => {
+    const rec = record({ messageIds: [], at: 1789142249233 });
+    const got = matchOutbound(
+      { quotedText: "", quotedMessageId: "7504206488704563208", quotedAt: 1789142249000 },
+      [rec]
+    );
+    expect(got?.sessionId).toBe("100");
+  });
+
+  it("does not match a reply sent minutes from the quoted message", () => {
+    const rec = record({ messageIds: [], at: 1789142249000 - 5 * 60_000 });
+    expect(
+      matchOutbound({ quotedText: "", quotedAt: 1789142249000 }, [rec])
+    ).toBeUndefined();
+  });
+
+  it("takes the send closest in time when several are close", () => {
+    const near = record({ sessionId: "200", messageIds: [], at: 1789142249500 });
+    const far = record({ sessionId: "100", messageIds: [], at: 1789142240000 });
+    expect(
+      matchOutbound({ quotedText: "", quotedAt: 1789142249000 }, [far, near])?.sessionId
+    ).toBe("200");
+  });
+
   it("matches a quote the client truncated", () => {
     const got = matchOutbound({ quotedText: "构建已经修好了，是缓..." }, [record()]);
     expect(got?.sessionId).toBe("100");
@@ -223,7 +282,13 @@ describe("resolveQuoteTarget", () => {
 
   it("routes to the live session that wrote the quoted message", () => {
     const got = resolveQuoteTarget({ quotedText: "构建已经修好了，是缓存没清。" }, deps());
-    expect(got).toEqual({ kind: "session", session: session() });
+    // The text comes back with it: WeChat's quote has none, so what the
+    // session actually sent is recovered from the record it matched.
+    expect(got).toEqual({
+      kind: "session",
+      session: session(),
+      quotedText: "构建已经修好了，是缓存没清。",
+    });
   });
 
   it("follows the name when that session's MCP server reconnected under a new pid", () => {
@@ -232,7 +297,7 @@ describe("resolveQuoteTarget", () => {
       { quotedText: "构建已经修好了，是缓存没清。" },
       deps({ live: [restarted], find: (sel) => (sel === "backend" ? restarted : undefined) })
     );
-    expect(got).toEqual({ kind: "session", session: restarted });
+    expect(got).toMatchObject({ kind: "session", session: restarted });
   });
 
   it("reports the session as gone when nothing answers to its name", () => {

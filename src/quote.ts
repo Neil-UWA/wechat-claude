@@ -68,15 +68,26 @@ export function stripQuotedNickname(quoted: string): string {
   return m ? m[2] : quoted;
 }
 
-const QUOTE_KEY = /(refer|quote|reply_to|replied|origin|source)/i;
+// "ref_msg" is what WeChat itself sends (item_list[].ref_msg.message_item);
+// the rest are the names other clients and bridges have used for the same
+// thing. Matched at a word boundary so an unrelated "preference" or
+// "referrer_count" can't be mistaken for a quote.
+const QUOTE_KEY = /(^|_)(ref|refer|referred|quote|quoted|reply|replied|origin|source)(_|$)/i;
 const TEXT_KEY = /^(text|content|title|desc|description|digest|msg|message)$/i;
 const ID_KEY = /(msg_?id|message_?id|svr_?id|^id$)/i;
+const TIME_KEY = /^(create_time_ms|createtime_ms|create_time|timestamp|time_ms)$/i;
 
 // Pull whatever a structured quote carries out of one object: the quoted text
 // and/or the quoted message's id, wherever they sit inside it.
+type QuoteFields = {
+  quotedText?: string;
+  quotedMessageId?: string;
+  quotedAt?: number;
+};
+
 function collectQuoteFields(
   node: unknown,
-  out: { quotedText?: string; quotedMessageId?: string },
+  out: QuoteFields,
   depth = 0
 ): void {
   if (depth > 4 || typeof node !== "object" || node === null) return;
@@ -86,6 +97,11 @@ function collectQuoteFields(
         out.quotedText = value;
       } else if (!out.quotedMessageId && ID_KEY.test(key)) {
         out.quotedMessageId = value;
+      }
+    } else if (typeof value === "number" && value > 0) {
+      // Seconds or milliseconds, depending on the field; normalise to ms.
+      if (!out.quotedAt && TIME_KEY.test(key)) {
+        out.quotedAt = value < 1e12 ? value * 1000 : value;
       }
     } else if (typeof value === "object") {
       collectQuoteFields(value, out, depth + 1);
@@ -106,7 +122,7 @@ export function extractStructuredQuote(
   for (const [key, value] of Object.entries(msg as Record<string, unknown>)) {
     if (value === null || value === undefined || value === "") continue;
     if (QUOTE_KEY.test(key)) {
-      const found: { quotedText?: string; quotedMessageId?: string } = {};
+      const found: QuoteFields = {};
       if (typeof value === "string") {
         if (ID_KEY.test(key)) found.quotedMessageId = value;
         else found.quotedText = value;
@@ -114,7 +130,11 @@ export function extractStructuredQuote(
         collectQuoteFields(value, found);
       }
       if (found.quotedText || found.quotedMessageId) {
-        return { quotedText: found.quotedText ?? "", quotedMessageId: found.quotedMessageId };
+        return {
+          quotedText: found.quotedText ?? "",
+          quotedMessageId: found.quotedMessageId,
+          quotedAt: found.quotedAt,
+        };
       }
     }
     if (typeof value === "object") {
@@ -139,6 +159,7 @@ export function extractQuote(
     // exactly what the user saw in the quote bubble.
     quotedText: textual?.quotedText || structured?.quotedText || "",
     quotedMessageId: structured?.quotedMessageId,
+    quotedAt: structured?.quotedAt,
     fromText: textual !== undefined,
     body: textual?.body ?? text,
   };
@@ -168,8 +189,35 @@ function textMatches(quoted: string, sent: string): boolean {
   return sent.startsWith(quoted) || quoted.startsWith(sent) || sent.includes(quoted);
 }
 
+// How far apart the server's idea of when a message was created and ours of
+// when we sent it may be for the two to still be the same message. WeChat
+// reports the quoted message's time to the second, so this is mostly clock
+// skew and flight time.
+const TIME_MATCH_MS = 15_000;
+
+// The outbound record sent closest to when the quoted message was created, if
+// one is close enough. Only reached when the id did not match: a session whose
+// reply predates this version has no recorded id, and WeChat's quote carries
+// no text to fall back on.
+function matchByTime(
+  quotedAt: number,
+  records: OutboundRecord[]
+): OutboundRecord | undefined {
+  let best: OutboundRecord | undefined;
+  let bestGap = TIME_MATCH_MS;
+  for (const r of records) {
+    const gap = Math.abs(r.at - quotedAt);
+    if (gap <= bestGap) {
+      best = r;
+      bestGap = gap;
+    }
+  }
+  return best;
+}
+
 // The outbound message a quote refers to. Message id first — when the API
-// gives us one it is exact — then the text, newest record first.
+// gives us one it is exact — then the text, newest record first, and finally
+// the time the quoted message was created.
 export function matchOutbound(
   quote: Quote,
   records: OutboundRecord[]
@@ -184,11 +232,12 @@ export function matchOutbound(
     normalizeQuoted(quote.quotedText),
     normalizeQuoted(stripQuotedNickname(quote.quotedText)),
   ].filter((c) => c !== "");
-  if (candidates.length === 0) return undefined;
-  return records.find((r) => {
+  const byText = records.find((r) => {
     const sent = normalizeQuoted(r.text);
     return candidates.some((c) => textMatches(c, sent));
   });
+  if (byText) return byText;
+  return quote.quotedAt ? matchByTime(quote.quotedAt, records) : undefined;
 }
 
 // Every reply carries a trailer naming its session ("—— 来自 backend（#3）· 直接
@@ -202,8 +251,11 @@ export function footerSelector(quotedText: string): string | undefined {
 }
 
 export type QuoteTarget =
-  // The live session that wrote the quoted message.
-  | { kind: "session"; session: SessionInfo }
+  // The live session that wrote the quoted message. `quotedText` is what that
+  // session actually sent, recovered from the outbox: WeChat's own quote
+  // carries an id and a timestamp but never the text, so this is the only way
+  // the receiving session can be shown what it is answering.
+  | { kind: "session"; session: SessionInfo; quotedText?: string }
   // We know which session wrote it, and that session is gone.
   | { kind: "gone"; name: string };
 
@@ -224,12 +276,12 @@ export function resolveQuoteTarget(
   const record = matchOutbound(quote, deps.records);
   if (record) {
     const exact = deps.live.find((s) => s.id === record.sessionId);
-    if (exact) return { kind: "session", session: exact };
+    if (exact) return { kind: "session", session: exact, quotedText: record.text };
     // The id is a pid, and an MCP server that reconnected got a new one while
     // remaining the same Claude session the user was talking to. The name is
     // what survives that, so try it before declaring the session gone.
     const byName = deps.find(record.sessionName);
-    if (byName) return { kind: "session", session: byName };
+    if (byName) return { kind: "session", session: byName, quotedText: record.text };
     return { kind: "gone", name: record.sessionName };
   }
   const selector = footerSelector(quote.quotedText);

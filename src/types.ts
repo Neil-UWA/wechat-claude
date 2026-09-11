@@ -171,6 +171,10 @@ export type Quote = {
   quotedText: string;
   // The quoted message's server id, when the API gave us a structured quote.
   quotedMessageId?: string;
+  // When the quoted message was created (ms), from the same structured quote.
+  // WeChat sends a quote as an id and a timestamp and no text at all, so this
+  // is half of everything we get.
+  quotedAt?: number;
   // Whether the quote was carried in the message text (and so was stripped out
   // of it). The receiving session is shown an excerpt in that case even when
   // the quote resolves to nothing, because the context is otherwise lost.

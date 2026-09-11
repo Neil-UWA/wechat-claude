@@ -12,7 +12,7 @@ vi.mock("node:os", async () => {
   return { ...actual, default: { ...actual.default, homedir: () => testHome }, homedir: () => testHome };
 });
 
-const { ILinkClient } = await import("../ilink.js");
+const { ILinkClient, sentMessageId } = await import("../ilink.js");
 
 const WECHAT_DIR = path.join(testHome, ".claude", "wechat");
 const SESSION_FILE = path.join(WECHAT_DIR, "session.json");
@@ -770,5 +770,25 @@ describe("ILinkClient", () => {
       expect(status.pendingCount).toBe(1);
       expect(status.trackedUsers).toBe(1);
     });
+  });
+});
+
+describe("sentMessageId", () => {
+  it("keeps every digit of an id JSON.parse would round off", () => {
+    // A real response. The id is 19 digits — past 2^53, so parsing the body
+    // and reading the field back gives 7504206776136071000, which matches no
+    // quote the server will ever send.
+    expect(sentMessageId('{"message_id":7504206776136071048}')).toBe(
+      "7504206776136071048"
+    );
+  });
+
+  it("accepts the id as a string too", () => {
+    expect(sentMessageId('{"msg_id":"123"}')).toBe("123");
+  });
+
+  it("is undefined when the response carries no id", () => {
+    expect(sentMessageId('{"ret":0}')).toBeUndefined();
+    expect(sentMessageId("")).toBeUndefined();
   });
 });
