@@ -224,13 +224,17 @@ export class ILinkClient {
         status.ilink_bot_id &&
         status.ilink_user_id
       ) {
-        this.session = {
+        // Through setSession, which writes session.json. Assigning
+        // this.session directly (as this did) left the token in the memory of
+        // a CLI process that was about to exit: `wechat-claude login` said it
+        // had saved the session, nothing was on disk, and the daemon refused
+        // to start for want of a login that had in fact just succeeded.
+        this.setSession({
           botToken: status.bot_token,
           ilinkBotId: status.ilink_bot_id,
           ilinkUserId: status.ilink_user_id,
           baseUrl: status.baseurl || DEFAULT_BASE_URL,
-        };
-        markLoginVerified();
+        });
         return;
       }
     }

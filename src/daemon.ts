@@ -1136,7 +1136,9 @@ async function main(): Promise<void> {
   const client = new ILinkClient();
 
   if (!client.tryRestoreSession()) {
-    log("No session found. Login via Claude Code first, then restart daemon.");
+    log(
+      "No WeChat login found. Run `wechat-claude login` (or /wechat in a Claude Code session), then start the daemon."
+    );
     process.exit(1);
   }
 

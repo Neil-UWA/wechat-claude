@@ -233,6 +233,62 @@ describe("ILinkClient", () => {
     });
   });
 
+  // There was no test here at all, which is how `wechat-claude login` came to
+  // report "session saved to ~/.claude/wechat/session.json" while saving
+  // nothing: login() assigned this.session and the CLI process exited with the
+  // token still only in memory.
+  describe("login", () => {
+    function stubLoginFetch(): void {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((url: string) => {
+          if (String(url).includes("get_bot_qrcode")) {
+            return Promise.resolve(
+              mockFetchResponse({ qrcode: "tok-1", qrcode_img_content: "https://qr" })
+            );
+          }
+          return Promise.resolve(
+            mockFetchResponse({
+              status: "confirmed",
+              bot_token: "fresh-token",
+              ilink_bot_id: "bot-9",
+              ilink_user_id: "user-9",
+              baseurl: "https://test.example.com",
+            })
+          );
+        })
+      );
+    }
+
+    it("persists the session, so the next process is still logged in", async () => {
+      // login() sleeps 2s between polls; run the timer straight through.
+      const realSetTimeout = globalThis.setTimeout;
+      vi.stubGlobal("setTimeout", (fn: () => void) => {
+        fn();
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      });
+      try {
+        stubLoginFetch();
+        const client = new ILinkClient();
+        await client.login(
+          () => {},
+          () => {}
+        );
+
+        expect(fs.existsSync(SESSION_FILE)).toBe(true);
+        // A separate client stands in for the daemon started after the CLI exits.
+        const next = new ILinkClient();
+        expect(next.tryRestoreSession()).toBe(true);
+        const saved = JSON.parse(fs.readFileSync(SESSION_FILE, "utf-8")) as {
+          botToken: string;
+        };
+        expect(saved.botToken).toBe("fresh-token");
+      } finally {
+        vi.stubGlobal("setTimeout", realSetTimeout);
+      }
+    });
+  });
+
   describe("sendText", () => {
     it("sends a single message", async () => {
       const client = new ILinkClient();
