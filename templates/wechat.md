@@ -7,7 +7,9 @@ Start WeChat message monitoring for this session. Optional argument: a WeChat ro
 
 1. Call `wechat_status`. It auto-starts the daemon when needed (if logged in), and its output includes this session's id and the exact watcher command to use in step 6.
 2. If an argument was given above (non-empty, not the literal `$ARGUMENTS`), call `wechat_set_session_name` with it now. The tool is idempotent — a session that already has that name is a no-op. If it returns an error (whitespace, purely numeric, or the name is held by another live session, whose pid it reports), tell the user and continue with the current name; do NOT pick a different name on your own.
-3. If not logged in — or the status says the login has EXPIRED — call `wechat_login`, show the QR code URL to the user, then poll with `wechat_login_poll` until confirmed. Login success also auto-starts the daemon.
+3. If not logged in — or the status says the login has EXPIRED — call `wechat_login`, show the QR code URL to the user **immediately** (QR codes are short-lived; they have expired inside two minutes), then poll with `wechat_login_poll` until confirmed. If a poll reports the code expired, it hands back a fresh URL in the same response — show that one and keep polling. Login success also auto-starts the daemon.
+
+   `Logged in: true` carries a verification note. `(verified …)` means a WeChat call actually succeeded. `(UNVERIFIED …)` means the token is only cached locally — nothing has confirmed it, and it may have been revoked elsewhere (e.g. `wechat-claude uninstall` on another machine). Don't promise the user it works; if a send then fails, re-login is the fix.
 4. If the status says the daemon could not be started, tell the user to check `~/.claude/wechat/daemon.log`.
 5. Call `wechat_get_messages` once to process any pending messages.
 6. Start a persistent Monitor with the watcher command from the `wechat_status` output:
@@ -17,6 +19,11 @@ Start WeChat message monitoring for this session. Optional argument: a WeChat ro
    like `node /path/to/wechat-claude-sessions/dist/watch-inbox.js <session id>`.
 
    Use `persistent: true`. The watcher is event-driven (`fs.watch` on the inbox), prints one line per new delivery, and maintains the heartbeat file that marks this session as `👀 monitoring` — the daemon prefers monitored sessions when routing messages without a `/s` prefix.
+
+   The watcher also reports trouble, and every `WECHAT:` line it prints needs acting on, not just the delivery ones:
+   - `login EXPIRED` — go back to step 3; nothing can arrive until the user re-scans.
+   - `daemon is NOT running` — call `wechat_status` (it auto-starts the daemon) and tell the user if that fails.
+   - `watcher stopping — …` — the watcher exits non-zero and this session is deaf from that moment. If it was superseded (the MCP server reconnected, so the session has a new id), call `wechat_status` and start a fresh watcher with the new command; if the session is simply gone, say so rather than reporting monitoring as active.
 7. When the Monitor emits an event:
    - Call `wechat_get_messages` to read and clear the inbox
    - Process the message content (answer questions, execute tasks, etc.)

@@ -183,6 +183,7 @@ session 用 `SendMessage` 找它时要用的（见 `ListAgents`）。`wechat_sta
 ├── daemon.log            # daemon 输出
 ├── cursor.txt            # 消息轮询游标
 ├── expired.flag          # 微信登录过期时存在
+├── login-verified        # 最后一次成功微信调用的时间戳（"已登录"的唯一实证）
 ├── usage-limit.json      # 已知的 Claude 用量上限状态（含已通知的用户）
 ├── update-check.json     # 上次从 npm 查到的最新版本（/ls 的升级提示用）
 ├── replies/              # 各 session 最近一次回复各微信用户的时间戳
@@ -205,7 +206,9 @@ session 用 `SendMessage` 找它时要用的（见 `ListAgents`）。`wechat_sta
 wechat-claude setup              # 注册 MCP server + /wechat 命令，然后登录
 wechat-claude login              # （重新）扫码认证
 wechat-claude status             # 查看登录 / daemon / 服务状态
-wechat-claude daemon             # 前台运行 daemon
+wechat-claude daemon             # 前台运行 daemon（跟着终端一起退出）
+wechat-claude daemon start       # 后台启动 daemon
+wechat-claude daemon stop        # 停止 daemon（装了 launchd 就卸载那个 job）
 wechat-claude daemon restart     # 重启 daemon（升级后用）
 wechat-claude daemon install     # 装成 launchd 服务（macOS）
 wechat-claude daemon uninstall   # 移除 launchd 服务
@@ -284,9 +287,20 @@ wechat-claude 会响应聊天消息、在你的机器上执行代码。完整威
 - **机器人不回消息了。** 多半是微信登录过期 —— daemon 在过期时会退出，也就再也发不出消息。
   回到 Mac 上运行 `wechat-claude status`；如果显示未登录，用 `wechat-claude login`
   （或在某个 session 里 `/wechat`）重新扫码。需要的话重启 daemon。
+- **`status` 说已登录，发消息却失败。** 本地只有一个缓存的 token，凭证可能在别处被吊销了
+  （比如在另一台机器上跑了 `wechat-claude uninstall`）。所以 `Logged in:` 后面会跟一个
+  说明：`(verified …)` 表示最近确实有一次微信调用成功；`(UNVERIFIED …)` 表示没有任何调用
+  证实过它，别拿它当准。重新 `wechat-claude login`（或 `/wechat`）扫码即可。
+- **watcher 停了。** 它会先打印一行 `WECHAT: watcher stopping — …` 说明原因，再以非 0
+  退出（静默退出 0 和正常结束没法区分）。如果是被顶替（`/mcp` 重连后 MCP server 换了新
+  的 session id），跑 `wechat_status` 拿新命令重开一个 watcher。
 - **`/run` 提示"找不到目录"。** 那个名字没解析到项目；把它的父目录加到
   `~/.claude/wechat/config.json` 的 `repoDirs` 里，或者传绝对路径，或者用
   `/run . <任务>` 在默认目录里跑。
+- **登录之后还是收不到消息。** `wechat-claude login` 和 `setup` 现在会自己把 daemon 起来
+  （已经在跑的会重启 —— 老 daemon 手里攥的是旧 token，不换掉它会拿旧 token 去轮询，
+  然后把你刚写好的 session.json 当过期凭证删掉）。想手动控制就用
+  `wechat-claude daemon start` / `stop`。
 - **消息发出去没反应。** 检查 `wechat-claude daemon status` 和
   `wechat-claude daemon log`。如果目标 session 不在 `👀 监控中`，在它里面跑 `/wechat`，
   或者用 `/use <编号>` 绑定。

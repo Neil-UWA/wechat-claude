@@ -109,4 +109,21 @@ describe("launchd", () => {
       expect(launchd.isLoaded()).toBe(false);
     });
   });
+
+  // `daemon stop` unloads the job but leaves the plist, and that machine still
+  // wants launchd to do the starting — so "installed" has to be a separate
+  // question from "loaded", or `daemon start` would quietly hand the user an
+  // unsupervised process with no auto-start.
+  describe("isInstalled", () => {
+    it("is true once the plist exists, whether or not the job is loaded", () => {
+      launchd.writePlist();
+      expect(fs.existsSync(launchd.PLIST_PATH)).toBe(true);
+      expect(launchd.isInstalled()).toBe(process.platform === "darwin");
+    });
+
+    it("is false with no plist on disk", () => {
+      fs.rmSync(launchd.PLIST_PATH, { force: true });
+      expect(launchd.isInstalled()).toBe(false);
+    });
+  });
 });

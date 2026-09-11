@@ -21,15 +21,23 @@ const WECHAT_DIR = path.join(testHome, ".claude", "wechat");
 const SESSIONS_DIR = path.join(WECHAT_DIR, "sessions");
 const HEARTBEAT_DIR = path.join(WECHAT_DIR, "heartbeat");
 
-// An id whose pid is alive (ours) so listSessions keeps the session file. Two
-// distinct session ids may share the live pid — liveness is all that matters.
+// Pids that are alive, so listSessions keeps the session files. Each session
+// needs its own: listSessions now groups servers by their live parent process
+// to hide the leftovers of an MCP reconnect, and two rows sharing one pid
+// would look like exactly that — one of them would be hidden as a ghost.
 const ALIVE_PID = process.pid;
+const OTHER_PID = process.ppid;
 
-function writeSession(id: string, name: string, lastActive: number): void {
+function writeSession(
+  id: string,
+  name: string,
+  lastActive: number,
+  pid: number = ALIVE_PID
+): void {
   mkdirSync(SESSIONS_DIR, { recursive: true });
   writeFileSync(
     path.join(SESSIONS_DIR, `${id}.json`),
-    JSON.stringify({ id, name, cwd: `/tmp/${name}`, pid: ALIVE_PID, lastActive })
+    JSON.stringify({ id, name, cwd: `/tmp/${name}`, pid, lastActive })
   );
 }
 
@@ -59,7 +67,7 @@ describe("routingLines", () => {
 
   it("warns when a binding points at a different live session", () => {
     writeSession("100", "here", Date.now());
-    writeSession("200", "other", Date.now() - 1000);
+    writeSession("200", "other", Date.now() - 1000, OTHER_PID);
     setBinding("u@im.wechat", "200");
     const text = routingLines("100").join("\n");
     expect(text).toContain("will NOT arrive in this session");
@@ -85,7 +93,7 @@ describe("routingLines", () => {
 
   it("says plainly when the default target is a different session", () => {
     writeSession("100", "here", Date.now() - 60_000);
-    writeSession("200", "other", Date.now());
+    writeSession("200", "other", Date.now(), OTHER_PID);
     markMonitoring("100");
     markMonitoring("200");
     const text = routingLines("100").join("\n");
@@ -97,7 +105,7 @@ describe("routingLines", () => {
 
   it("prefers a monitored session over a more recently active unmonitored one", () => {
     writeSession("100", "here", Date.now());
-    writeSession("200", "other", Date.now() + 60_000);
+    writeSession("200", "other", Date.now() + 60_000, OTHER_PID);
     markMonitoring("100");
     const text = routingLines("100").join("\n");
     expect(text).toContain("(this session)");

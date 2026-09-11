@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +10,18 @@ import {
   claudeRecordsForSessions,
   ownClaudeSessionName,
 } from "./claude-sessions.js";
-import { ILinkClient } from "./ilink.js";
+import {
+  DAEMON_PATH,
+  ensureDaemonRunning,
+  isDaemonRunning,
+  restartDaemonForNewLogin,
+} from "./daemon-control.js";
+import {
+  ILinkClient,
+  SESSION_EXPIRED,
+  SESSION_REPLACED,
+} from "./ilink.js";
+import { loginVerification, verificationNote } from "./login-state.js";
 import { PKG_VERSION } from "./version.js";
 import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js";
 import { isMonitoring, touchHeartbeat } from "./monitoring.js";
@@ -21,13 +31,11 @@ import { routingLines } from "./routing.js";
 import { transcriptPath } from "./transcripts.js";
 import { readUsageState, resetHint } from "./usage.js";
 import {
-  DAEMON_PID_FILE,
+  DAEMON_LOG_FILE,
   EXPIRED_FLAG_FILE,
   SESSIONS_DIR,
   TYPING_DIR,
-  WECHAT_DIR,
   ensureDirs as ensureWechatDirs,
-  isProcessAlive,
 } from "./paths.js";
 import {
   type SessionInfo,
@@ -39,8 +47,6 @@ import {
   writeSessionFile,
 } from "./sessions.js";
 
-const DAEMON_LOG_FILE = path.join(WECHAT_DIR, "daemon.log");
-const DAEMON_PATH = fileURLToPath(new URL("./daemon.js", import.meta.url));
 
 const WATCHER_PATH = fileURLToPath(new URL("./watch-inbox.js", import.meta.url));
 
@@ -52,44 +58,17 @@ function detectSessionName(): string {
   return detectSessionNameFor(process.cwd());
 }
 
-function isDaemonRunning(): boolean {
-  try {
-    const pid = parseInt(
-      fs.readFileSync(DAEMON_PID_FILE, "utf-8").trim(),
-      10
-    );
-    return isProcessAlive(pid);
-  } catch {
-    return false;
-  }
-}
-
-// Spawn the daemon detached if it is not already running. The daemon has its
-// own pid-file singleton guard, so a concurrent spawn from another session is
-// harmless. Returns true if the daemon is running when we're done.
-async function ensureDaemonRunning(): Promise<{
+// Start the daemon if nothing is polling. Shared with the CLI so both agree on
+// the rules (launchd owns it where installed; a pid file is only trusted once
+// the process behind it is confirmed to be a daemon).
+async function ensureDaemon(): Promise<{
   running: boolean;
   autoStarted: boolean;
 }> {
   if (isDaemonRunning()) return { running: true, autoStarted: false };
   if (!client.isLoggedIn) return { running: false, autoStarted: false };
-  try {
-    const logFd = fs.openSync(DAEMON_LOG_FILE, "a");
-    const child = spawn(process.execPath, [DAEMON_PATH], {
-      detached: true,
-      stdio: ["ignore", logFd, logFd],
-    });
-    child.unref();
-    fs.closeSync(logFd);
-  } catch {
-    return { running: false, autoStarted: false };
-  }
-  const deadline = Date.now() + 3000;
-  while (Date.now() < deadline) {
-    if (isDaemonRunning()) return { running: true, autoStarted: true };
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return { running: false, autoStarted: false };
+  const ok = await ensureDaemonRunning();
+  return { running: ok, autoStarted: ok };
 }
 
 function isLoginExpired(): boolean {
@@ -128,6 +107,9 @@ function currentSessionInfo(): SessionInfo {
       : undefined,
     // Re-read each time: Claude Code can rename its session after we start.
     claudeName: ownClaudeSessionName(process.ppid),
+    // Lets listSessions() tell a reconnect's leftover MCP server apart from a
+    // genuinely separate session (see supersededIds()).
+    claudePid: process.ppid,
   };
 }
 
@@ -168,6 +150,82 @@ function clearTyping(userId: string): void {
 
 const server = new McpServer({ name: "wechat-claude", version: PKG_VERSION });
 
+type ToolResult = {
+  content: { type: "text"; text: string }[];
+  isError?: boolean;
+};
+
+// A send is where the truth about the token surfaces: the API answers a
+// revoked credential with an error in the body, and until now that came back
+// as a bare "Send failed". Record the expiry so wechat_status stops claiming
+// otherwise, and say what fixes it.
+function sendFailure(err: unknown): ToolResult {
+  const msg = err instanceof Error ? err.message : String(err);
+  // A newer login landed mid-send. Flagging expiry here would mark a perfectly
+  // good credential dead and send the user back to a QR code for nothing.
+  if (msg.includes(SESSION_REPLACED)) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: "Send failed: another session logged in to WeChat while this message was in flight, so this send used a credential that is no longer current. The new login has been picked up — send again.",
+        },
+      ],
+      isError: true,
+    };
+  }
+  if (msg.includes(SESSION_EXPIRED)) {
+    try {
+      fs.writeFileSync(EXPIRED_FLAG_FILE, String(Date.now()));
+    } catch {}
+    return {
+      content: [
+        {
+          type: "text",
+          text: "Send failed: the WeChat login has EXPIRED — the token was revoked (e.g. `wechat-claude uninstall` on another machine) or timed out, and it has been cleared. Call wechat_login, have the user scan the QR code, then send again.",
+        },
+      ],
+      isError: true,
+    };
+  }
+  return { content: [{ type: "text", text: `Send failed: ${msg}` }], isError: true };
+}
+
+const NOT_LOGGED_IN: ToolResult = {
+  content: [
+    {
+      type: "text",
+      text: "Not logged in. Call wechat_login and have the user scan the QR code.",
+    },
+  ],
+  isError: true,
+};
+
+// When each QR code was handed out. The API reports "expired" but never says
+// how long a code is good for, and there is at least one conversational round
+// trip between showing the URL and the next poll — long enough, in practice,
+// for the user to lose the race without ever being told there was one. Age is
+// surfaced on every poll so the agent can hurry the user along, and an expired
+// code is replaced on the spot instead of costing another round trip.
+const qrIssuedAt = new Map<string, number>();
+
+function rememberQR(token: string): void {
+  // Only the current login attempt matters; don't grow without bound.
+  if (qrIssuedAt.size > 20) qrIssuedAt.clear();
+  qrIssuedAt.set(token, Date.now());
+}
+
+function qrAgeNote(token: string): string {
+  const issued = qrIssuedAt.get(token);
+  if (issued === undefined) return "";
+  const secs = Math.round((Date.now() - issued) / 1000);
+  const hurry =
+    secs >= 45
+      ? " — QR codes are short-lived (they have expired inside two minutes); if the user has not scanned yet, tell them to scan now."
+      : "";
+  return ` QR issued ${secs}s ago${hurry}.`;
+}
+
 server.tool(
   "wechat_login",
   "Login to WeChat by scanning a QR code.",
@@ -182,11 +240,12 @@ server.tool(
     }
     try {
       const qr = await client.getQRCode();
+      rememberQR(qr.qrcode);
       return {
         content: [
           {
             type: "text",
-            text: `QR code generated. Ask the user to scan it with WeChat.\n\nQR Code URL: ${qr.qrcode_img_content}\n\nUse wechat_login_poll with qrcode_token="${qr.qrcode}" to check scan status.`,
+            text: `QR code generated. Show this URL to the user right now and ask them to scan it — QR codes are short-lived (they have expired inside two minutes), and the clock is already running.\n\nQR Code URL: ${qr.qrcode_img_content}\n\nUse wechat_login_poll with qrcode_token="${qr.qrcode}" to check scan status. Poll promptly; if the code expires, the poll issues a fresh one and returns its URL.`,
           },
         ],
       };
@@ -226,12 +285,15 @@ server.tool(
         try {
           fs.unlinkSync(EXPIRED_FLAG_FILE);
         } catch {}
-        const daemon = await ensureDaemonRunning();
-        const daemonNote = daemon.running
-          ? daemon.autoStarted
-            ? "Daemon auto-started."
-            : "Daemon already running."
-          : `Daemon could not be started — run: wechat-claude daemon (or node ${DAEMON_PATH})`;
+        // Restart, never "start if absent": a daemon that is already running
+        // holds the credential it read at startup and never re-reads
+        // session.json, so it would keep polling with the token this login
+        // just replaced — and exit when that one is rejected, leaving the new
+        // login with nothing polling.
+        const restarted = await restartDaemonForNewLogin();
+        const daemonNote = restarted
+          ? "Daemon restarted with the new login."
+          : `Daemon could not be started — run: wechat-claude daemon start (or node ${DAEMON_PATH})`;
         return {
           content: [
             {
@@ -242,17 +304,36 @@ server.tool(
         };
       }
       if (status.status === "expired") {
-        return {
-          content: [
-            { type: "text", text: "QR code expired. Call wechat_login again." },
-          ],
-        };
+        // Reissue here rather than making the agent call wechat_login again:
+        // the user is waiting, and every round trip burns more of the next
+        // code's life.
+        try {
+          const fresh = await client.getQRCode();
+          rememberQR(fresh.qrcode);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `QR code expired.${qrAgeNote(qrcode_token)} A fresh one has been issued — show this URL to the user now and ask them to scan immediately.\n\nQR Code URL: ${fresh.qrcode_img_content}\n\nKeep polling with qrcode_token="${fresh.qrcode}".`,
+              },
+            ],
+          };
+        } catch {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `QR code expired.${qrAgeNote(qrcode_token)} Issuing a replacement failed — call wechat_login again.`,
+              },
+            ],
+          };
+        }
       }
       return {
         content: [
           {
             type: "text",
-            text: `Status: ${status.status}. ${status.status === "scaned" ? "Scanned, awaiting confirmation..." : "Waiting for scan..."} Keep polling.`,
+            text: `Status: ${status.status}. ${status.status === "scaned" ? "Scanned, awaiting confirmation..." : "Waiting for scan..."} Keep polling.${qrAgeNote(qrcode_token)}`,
           },
         ],
       };
@@ -309,12 +390,7 @@ server.tool(
     text: z.string().describe("Text message to send"),
   },
   async ({ to_user_id, text }) => {
-    if (!client.isLoggedIn) {
-      return {
-        content: [{ type: "text", text: "Not logged in." }],
-        isError: true,
-      };
-    }
+    if (!client.isLoggedIn) return NOT_LOGGED_IN;
     try {
       clearTyping(to_user_id);
       await client.sendText(
@@ -331,15 +407,7 @@ server.tool(
         ],
       };
     } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Send failed: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
+      return sendFailure(err);
     }
   }
 );
@@ -353,12 +421,7 @@ server.tool(
     caption: z.string().optional().describe("Optional text caption to send with the image"),
   },
   async ({ to_user_id, file_path, caption }) => {
-    if (!client.isLoggedIn) {
-      return {
-        content: [{ type: "text", text: "Not logged in." }],
-        isError: true,
-      };
-    }
+    if (!client.isLoggedIn) return NOT_LOGGED_IN;
     try {
       const fs = await import("node:fs");
       if (!fs.existsSync(file_path)) {
@@ -386,15 +449,7 @@ server.tool(
         ],
       };
     } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Send image failed: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
+      return sendFailure(err);
     }
   }
 );
@@ -464,7 +519,7 @@ server.tool(
   "Check WeChat connection, daemon status, and active sessions. Call at session start to see if WeChat monitoring is available.",
   {},
   async () => {
-    const daemon = await ensureDaemonRunning();
+    const daemon = await ensureDaemon();
     // Running /wechat is the user turning their attention to this session, so
     // it should become the default target for plain messages once its watcher
     // is up (the default is the most recently active monitored session).
@@ -478,7 +533,7 @@ server.tool(
     const records = claudeRecordsForSessions(sessions);
     const lines = [
       `wechat-claude v${PKG_VERSION}`,
-      `Logged in: ${client.isLoggedIn}`,
+      `Logged in: ${client.isLoggedIn}${client.isLoggedIn ? ` ${verificationNote(loginVerification())}` : ""}`,
       `Daemon running: ${daemon.running}${daemon.autoStarted ? " (auto-started just now)" : ""}`,
       `Session: ${sessionName.value} (id: ${sessionId})  ·  WeChat routing name, use in "/s ${sessionName.value} <msg>"`,
       `Claude Code session name: ${ownClaudeName ?? "unknown"}  ·  what other Claude sessions pass to SendMessage; see ListAgents`,

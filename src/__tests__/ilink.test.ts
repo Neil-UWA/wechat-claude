@@ -233,6 +233,149 @@ describe("ILinkClient", () => {
     });
   });
 
+  // There was no test here at all, which is how `wechat-claude login` came to
+  // report "session saved to ~/.claude/wechat/session.json" while saving
+  // nothing: login() assigned this.session and the CLI process exited with the
+  // token still only in memory.
+  describe("login", () => {
+    function stubLoginFetch(): void {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((url: string) => {
+          if (String(url).includes("get_bot_qrcode")) {
+            return Promise.resolve(
+              mockFetchResponse({ qrcode: "tok-1", qrcode_img_content: "https://qr" })
+            );
+          }
+          return Promise.resolve(
+            mockFetchResponse({
+              status: "confirmed",
+              bot_token: "fresh-token",
+              ilink_bot_id: "bot-9",
+              ilink_user_id: "user-9",
+              baseurl: "https://test.example.com",
+            })
+          );
+        })
+      );
+    }
+
+    it("persists the session, so the next process is still logged in", async () => {
+      // login() sleeps 2s between polls; run the timer straight through.
+      const realSetTimeout = globalThis.setTimeout;
+      vi.stubGlobal("setTimeout", (fn: () => void) => {
+        fn();
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      });
+      try {
+        stubLoginFetch();
+        const client = new ILinkClient();
+        await client.login(
+          () => {},
+          () => {}
+        );
+
+        expect(fs.existsSync(SESSION_FILE)).toBe(true);
+        // A separate client stands in for the daemon started after the CLI exits.
+        const next = new ILinkClient();
+        expect(next.tryRestoreSession()).toBe(true);
+        const saved = JSON.parse(fs.readFileSync(SESSION_FILE, "utf-8")) as {
+          botToken: string;
+        };
+        expect(saved.botToken).toBe("fresh-token");
+      } finally {
+        vi.stubGlobal("setTimeout", realSetTimeout);
+      }
+    });
+  });
+
+  describe("expiry handling", () => {
+    // A rejected request may have been in flight while another session logged
+    // in. Deleting the file then logs the user out of a login that just
+    // succeeded — the same "no session.json" hole, reached from the other end.
+    it("leaves a newer credential alone when a stale request expires", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+
+      // A concurrent login replaces the file while the send is in flight.
+      fs.writeFileSync(
+        SESSION_FILE,
+        JSON.stringify({ ...TEST_SESSION, botToken: "fresh-token" })
+      );
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(mockFetchResponse({ errcode: -14 }))
+      );
+      // Reported as a replacement, not an expiry: callers must not flag a
+      // credential that is perfectly good, and the daemon must keep polling.
+      await expect(client.sendText(TEST_USER_ID, "hi")).rejects.toThrow(
+        "replaced by a newer login"
+      );
+
+      const saved = JSON.parse(fs.readFileSync(SESSION_FILE, "utf-8")) as {
+        botToken: string;
+      };
+      expect(saved.botToken).toBe("fresh-token");
+      // And the newer credential is adopted, so a retry uses it.
+      expect(client.isLoggedIn).toBe(true);
+    });
+
+    it("removes the credential that actually expired", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(mockFetchResponse({ errcode: -14 }))
+      );
+      await expect(client.sendText(TEST_USER_ID, "hi")).rejects.toThrow(
+        "Session expired"
+      );
+
+      expect(fs.existsSync(SESSION_FILE)).toBe(false);
+    });
+
+    // getuploadurl is the first authenticated call of an image send; a -14
+    // there used to surface as "no upload URL".
+    it("reports an expired login from the upload-URL request", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+      const image = path.join(testHome, "expiry.png");
+      fs.writeFileSync(image, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(mockFetchResponse({ errcode: -14 }))
+      );
+      await expect(client.sendImage(TEST_USER_ID, image)).rejects.toThrow(
+        "Session expired"
+      );
+    });
+  });
+
+  describe("setSession", () => {
+    // "Logged in" that did not reach the disk is the bug this whole area is
+    // about; a write that fails must not come back as success.
+    it("fails loudly when the session cannot be written", () => {
+      const client = new ILinkClient();
+      const spy = vi.spyOn(fs, "writeFileSync").mockImplementation(() => {
+        throw new Error("EACCES: permission denied");
+      });
+      try {
+        expect(() => client.setSession(TEST_SESSION)).toThrow(
+          "could not be saved"
+        );
+        expect(client.isLoggedIn).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
   describe("sendText", () => {
     it("sends a single message", async () => {
       const client = new ILinkClient();
@@ -291,6 +434,52 @@ describe("ILinkClient", () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({}, 500)));
 
       await expect(client.sendText(TEST_USER_ID, "hello")).rejects.toThrow("sendmessage failed: 500");
+    });
+
+    // A revoked token answers HTTP 200 with the error in the body. Reading
+    // only res.ok reports the reply as delivered and drops it.
+    it("treats errcode -14 in a 200 body as an expired session", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(mockFetchResponse({ errcode: -14, errmsg: "session timeout" }))
+      );
+
+      await expect(client.sendText(TEST_USER_ID, "hello")).rejects.toThrow(
+        "Session expired"
+      );
+      // The stale credential is dropped, so the next status is honest.
+      expect(fs.existsSync(SESSION_FILE)).toBe(false);
+      expect(client.isLoggedIn).toBe(false);
+    });
+
+    it("surfaces any other error code in the body", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ ret: 5 })));
+
+      await expect(client.sendText(TEST_USER_ID, "hello")).rejects.toThrow(
+        "sendmessage error 5"
+      );
+    });
+
+    it("records a successful send as proof the login still works", async () => {
+      // Restore from disk rather than setSession(), which stamps by itself.
+      fs.writeFileSync(SESSION_FILE, JSON.stringify(TEST_SESSION));
+      const client = new ILinkClient();
+      expect(client.isLoggedIn).toBe(true);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+      fs.rmSync(path.join(WECHAT_DIR, "login-verified"), { force: true });
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ ret: 0 })));
+      await client.sendText(TEST_USER_ID, "hello");
+
+      expect(fs.existsSync(path.join(WECHAT_DIR, "login-verified"))).toBe(true);
     });
   });
 

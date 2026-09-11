@@ -3,7 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
-import { ILinkClient } from "./ilink.js";
+import {
+  ILinkClient,
+  SESSION_EXPIRED,
+  SESSION_REPLACED,
+} from "./ilink.js";
 import {
   clearBinding,
   clearBindingsToSession,
@@ -1136,7 +1140,9 @@ async function main(): Promise<void> {
   const client = new ILinkClient();
 
   if (!client.tryRestoreSession()) {
-    log("No session found. Login via Claude Code first, then restart daemon.");
+    log(
+      "No WeChat login found. Run `wechat-claude login` (or /wechat in a Claude Code session), then start the daemon."
+    );
     process.exit(1);
   }
 
@@ -1191,8 +1197,25 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      if (errMsg.includes("Session expired")) {
-        log("Session expired. Exiting.");
+      // Someone logged in again while this poll was in flight: the rejection
+      // belongs to the old token, not to the credential now on disk (which
+      // the client has already adopted). Carry on with a fresh cursor — the
+      // old one belongs to the dead login — instead of declaring an expiry
+      // and leaving the new login with no poller.
+      if (errMsg.includes(SESSION_REPLACED)) {
+        log("Login was replaced by a newer one. Continuing with it.");
+        client.setUpdatesCursor("");
+        setCursor("");
+        continue;
+      }
+      // "Not logged in" means the credential was cleared out from under the
+      // poll — a send that hit the same revoked token gets there first — and
+      // is the same failure, not a transient one to retry every 5s forever.
+      if (
+        errMsg.includes(SESSION_EXPIRED) ||
+        errMsg.includes("Not logged in")
+      ) {
+        log(`Login is no longer valid (${errMsg}). Exiting.`);
         try {
           fs.writeFileSync(EXPIRED_FLAG_FILE, String(Date.now()));
         } catch {}

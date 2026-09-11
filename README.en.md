@@ -214,6 +214,7 @@ with `SendMessage`, tells you on WeChat which session it went to and how to
 ├── daemon.log            # daemon output
 ├── cursor.txt            # message polling cursor
 ├── expired.flag          # present when the WeChat login has expired
+├── login-verified        # timestamp of the last WeChat call that succeeded
 ├── usage-limit.json      # known Claude usage-limit state (incl. notified users)
 ├── update-check.json     # last `latest` version seen on npm (for the /ls upgrade notice)
 ├── replies/              # last time each session replied to each WeChat user
@@ -236,7 +237,9 @@ with `SendMessage`, tells you on WeChat which session it went to and how to
 wechat-claude setup              # Register MCP server + /wechat command, then log in
 wechat-claude login              # (Re)authenticate by scanning a QR code
 wechat-claude status             # Show login / daemon / service state
-wechat-claude daemon             # Run the daemon in the foreground
+wechat-claude daemon             # Run the daemon in the foreground (dies with the terminal)
+wechat-claude daemon start       # Start it in the background
+wechat-claude daemon stop        # Stop it (unloads the launchd job when one owns it)
 wechat-claude daemon restart     # Restart it (use after upgrading)
 wechat-claude daemon install     # Install as a launchd service (macOS)
 wechat-claude daemon uninstall   # Remove the launchd service
@@ -322,9 +325,24 @@ wechat-claude executes code on your machine in response to chat messages. Read
   exits on expiry and can no longer send messages. Back at the Mac, run
   `wechat-claude status`; if logged out, `wechat-claude login` (or
   `/wechat` in a session) to re-scan. Restart the daemon if needed.
+- **`status` says logged in, but sending fails.** The token is only cached
+  locally, and it can be revoked elsewhere (e.g. `wechat-claude uninstall` on
+  another machine). That is why the `Logged in:` line carries a qualifier:
+  `(verified …)` means a WeChat call actually succeeded recently, while
+  `(UNVERIFIED …)` means nothing has confirmed the token — don't count on it.
+  Re-run `wechat-claude login` (or `/wechat`) to re-scan.
+- **The watcher stopped.** It prints one `WECHAT: watcher stopping — …` line
+  saying why and exits non-zero (a silent exit 0 is indistinguishable from a
+  clean shutdown). If it was superseded — an MCP reconnect gave the session a
+  new id — run `wechat_status` and start a watcher with the new command.
 - **`/run` says "找不到目录".** The name didn't resolve to a project; add its
   parent to `repoDirs` in `~/.claude/wechat/config.json`, pass an absolute
   path, or use `/run . <task>` to run in the default directory.
+- **Logged in, still receiving nothing.** `wechat-claude login` and `setup` now
+  start the daemon themselves, restarting one that is already running — it
+  holds the credential it read at startup, so after a re-login it would keep
+  polling with the old token and then delete the session file the new login
+  just wrote. `wechat-claude daemon start` / `stop` control it by hand.
 - **A message got no response.** Check `wechat-claude daemon status` and
   `wechat-claude daemon log`. If the target session isn't `👀 monitoring`, run
   `/wechat` in it or bind with `/use <n>`.

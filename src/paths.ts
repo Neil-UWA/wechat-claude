@@ -10,7 +10,11 @@ export const TYPING_DIR = path.join(WECHAT_DIR, "typing");
 export const MEDIA_DIR = path.join(WECHAT_DIR, "media");
 export const CURSOR_FILE = path.join(WECHAT_DIR, "cursor.txt");
 export const DAEMON_PID_FILE = path.join(WECHAT_DIR, "daemon.pid");
+export const DAEMON_LOG_FILE = path.join(WECHAT_DIR, "daemon.log");
 export const EXPIRED_FLAG_FILE = path.join(WECHAT_DIR, "expired.flag");
+// Timestamp of the last WeChat call that actually succeeded — the only local
+// evidence that the cached bot token is still valid (see login-state.ts).
+export const LOGIN_VERIFIED_FILE = path.join(WECHAT_DIR, "login-verified");
 export const CONFIG_FILE = path.join(WECHAT_DIR, "config.json");
 // Per-user timestamp of the last reply a session actually sent back to WeChat,
 // so the daemon can tell "session answered" from "session went silent".

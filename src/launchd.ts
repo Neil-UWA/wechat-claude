@@ -81,6 +81,13 @@ export function unload(): boolean {
   return launchctl("unload", PLIST_PATH);
 }
 
+// Whether the service is installed at all. Distinct from isLoaded(): `daemon
+// stop` unloads the job but leaves the plist, and that machine still wants
+// launchd to be the one starting the daemon.
+export function isInstalled(): boolean {
+  return isMac() && fs.existsSync(PLIST_PATH);
+}
+
 export function isLoaded(): boolean {
   const r = spawnSync("launchctl", ["list"], { encoding: "utf-8" });
   return (r.stdout ?? "").includes(LABEL);
