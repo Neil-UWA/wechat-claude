@@ -21,6 +21,7 @@ import {
   SESSION_EXPIRED,
   SESSION_REPLACED,
 } from "./ilink.js";
+import { getLang, marker } from "./i18n.js";
 import { loginVerification, verificationNote } from "./login-state.js";
 import { PKG_VERSION } from "./version.js";
 import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js";
@@ -450,18 +451,21 @@ server.tool(
       // limit; sendImage sends its caption as a single item and would fail
       // once the footer pushed a long caption over that limit. Same order as
       // sendImage's own caption handling: text first, then the image.
-      if (fullCaption) {
-        const messageIds = await client.sendText(to_user_id, fullCaption);
-        recordOutbound({
-          sessionId,
-          sessionName: sessionName.value,
-          userId: to_user_id,
-          text: fullCaption,
-          messageIds,
-        });
-      }
-      await client.sendImage(to_user_id, file_path);
+      const messageIds = fullCaption
+        ? await client.sendText(to_user_id, fullCaption)
+        : [];
+      messageIds.push(...(await client.sendImage(to_user_id, file_path)));
       markReplied(sessionId, to_user_id);
+      // One record for the whole send, both ids on it: quoting either the
+      // caption or the image itself should reach this session. With no
+      // caption there is no text to excerpt, so the marker stands in.
+      recordOutbound({
+        sessionId,
+        sessionName: sessionName.value,
+        userId: to_user_id,
+        text: caption ?? marker("image", getLang()),
+        messageIds,
+      });
       await client.sendTyping(to_user_id, false);
       return {
         content: [

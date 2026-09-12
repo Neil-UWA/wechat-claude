@@ -53,6 +53,7 @@ import {
   sortedSessions,
 } from "./sessions.js";
 import { peekInbox, writeToInbox } from "./inbox.js";
+import { isBareRouteCommand, parseRouteCommand } from "./routing.js";
 import { listOutbound } from "./outbox.js";
 import {
   extractQuote,
@@ -781,6 +782,28 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     });
   };
 
+  // Resolved once, before any dispatch: plain routing wants the session the
+  // quote points at, and every path that delivers wants the quoted text, so
+  // the receiving session knows which of its own messages is being answered.
+  const quoteTarget = msg.quote
+    ? resolveQuoteTarget(msg.quote, {
+        records: listOutbound(msg.fromUserId),
+        live: listSessions(),
+        find: (selector) => findSession(selector),
+      })
+    : undefined;
+  // WeChat's quote carries no text at all, so what the quoted message said
+  // comes from the outbox record it matched.
+  const quotedText =
+    (quoteTarget?.kind === "session" ? quoteTarget.quotedText : undefined) ??
+    msg.quote?.quotedText ??
+    "";
+  const excerpt = quoteExcerpt(quotedText);
+  // Nothing to excerpt (an image, or a quote we could not place) means nothing
+  // to add.
+  const withQuote = (body: string): string =>
+    excerpt === "" ? body : m.quotedContext(excerpt, body);
+
   if (text === "/usage" || text === "/limit" || text === "/用量") {
     sendReply(m.usageChecking);
     void (async () => {
@@ -1054,22 +1077,22 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     return;
   }
 
-  const bareRoute = text.match(/^\/s(?:\s+(\S+))?\s*$/);
-  if (bareRoute) {
+  if (isBareRouteCommand(text)) {
     sendReply(m.sListUsage);
     return;
   }
 
-  const routeMatch = text.match(/^\/s\s+(\S+)\s+([\s\S]+)$/);
+  const routeMatch = parseRouteCommand(text);
   if (routeMatch) {
-    const selector = routeMatch[1];
-    const message = routeMatch[2];
+    const { selector, message } = routeMatch;
     const target = findSession(selector);
     if (!target) {
       sendReply(m.notFound(selector));
       return;
     }
-    const routed: PendingMessage = { ...msg, text: message };
+    // A quote alongside an explicit target is still context the session needs:
+    // the user can see the quote in their own chat.
+    const routed: PendingMessage = { ...msg, text: withQuote(message) };
     writeToInbox(target.id, routed);
     trackDelivery(routed, target.id, target.name);
     if (!isMonitoring(target.id)) {
@@ -1089,21 +1112,12 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   // the user pointing at a session, and it is a one-off, so the binding is
   // left alone.
   let quoted: SessionInfo | undefined;
-  // What the quoted message said. WeChat's quote carries only an id and a
-  // timestamp, so this comes from the outbox record we matched it to.
-  let quotedText = msg.quote?.quotedText ?? "";
-  if (msg.quote) {
-    const resolved = resolveQuoteTarget(msg.quote, {
-      records: listOutbound(msg.fromUserId),
-      live: sessions,
-      find: (selector) => findSession(selector),
-    });
-    if (resolved?.kind === "session") {
-      quoted = resolved.session;
-      quotedText = resolved.quotedText ?? quotedText;
-    } else if (resolved?.kind === "gone") {
-      sendReply(m.quoteSessionGone(resolved.name));
-    }
+  if (quoteTarget?.kind === "session") {
+    quoted = quoteTarget.session;
+  } else if (quoteTarget?.kind === "gone") {
+    // Only worth saying where the quote was the routing decision; with an
+    // explicit "/s <n>" the user already said where this goes.
+    sendReply(m.quoteSessionGone(quoteTarget.name));
   }
 
   // A bound session wins; otherwise prefer sessions that are actively
@@ -1121,14 +1135,7 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     sendReply(m.noSessionsDeliver);
     return;
   }
-  // Hand the session a short excerpt of what was quoted: without it a reply
-  // like "改成蓝色" arrives with no idea which of its own messages it answers.
-  // Nothing to excerpt (an image, say) means nothing to add.
-  const excerpt = msg.quote ? quoteExcerpt(quotedText) : "";
-  const delivered: PendingMessage =
-    excerpt !== "" && (msg.quote?.fromText || quoted)
-      ? { ...msg, text: m.quotedContext(excerpt, msg.text) }
-      : msg;
+  const delivered: PendingMessage = { ...msg, text: withQuote(msg.text) };
   writeToInbox(target.id, delivered);
   trackDelivery(delivered, target.id, target.name);
   if (!isMonitoring(target.id)) {

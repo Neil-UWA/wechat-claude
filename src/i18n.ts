@@ -189,7 +189,7 @@ const zh: Msgs = {
     "💬 聊",
     "/use 3 — 绑定 3 号，之后消息都发给它",
     "/use off — 取消绑定",
-    "/s 3 你好 — 只发这一条给 3 号",
+    "/s 3 你好 — 只发这一条给 3 号（可简写 /3 你好）",
     "引用某条回复再打字 — 直接发给写那条回复的 session，不用 /s",
     "",
     "🚀 跑任务",
@@ -216,7 +216,8 @@ const zh: Msgs = {
   ].join("\n"),
   noSessions: "当前没有活跃的 Claude session。",
   noSessionsDeliver: "当前没有活跃的 Claude session，消息无法投递。",
-  sListUsage: "用法: /s <编号|名字> <消息>\n例: /s 1 你好\n发送 /sessions 查看可用列表。",
+  sListUsage:
+    "用法: /s <编号|名字> <消息>\n例: /s 1 你好（编号也可以简写成 /1 你好）\n发送 /sessions 查看可用列表。",
   notFound: (sel) => `找不到 "${sel}"。发送 /sessions 查看列表。`,
   deliveredUnmonitored: (name) =>
     `已投递到 "${name}"，但该 session 未在监控消息（未运行 /wechat），可能不会及时处理。`,
@@ -293,7 +294,7 @@ const zh: Msgs = {
       ? "📌 = 已绑定，你的消息都发到这里（/use off 取消）"
       : "📥 = 默认接收，不带前缀的消息发到这里（/use <编号> 可固定绑定）",
   legendRoute: (example) =>
-    `用 /s <编号> <消息> 发到指定 session，例: /s ${example} 你好`,
+    `用 /s <编号> <消息> 发到指定 session，例: /s ${example} 你好（也可简写 /${example} 你好）`,
   versionLine: (version) => `📦 当前版本：wechat-claude @ v${version}`,
   updateAvailable: (current, latest) =>
     `⬆️ 有新版本 v${latest}（当前 v${current}）。在电脑上更新:\nnpm i -g wechat-claude-sessions@latest && wechat-claude daemon restart\n然后在各 Claude Code session 里 /mcp → wechat → Reconnect，再 /wechat 重新挂上。`,
@@ -339,7 +340,7 @@ const en: Msgs = {
     "💬 Chat",
     "/use 3 — bind #3; your messages all go there",
     "/use off — unbind",
-    "/s 3 hi — send just this one to #3",
+    "/s 3 hi — send just this one to #3 (or just /3 hi)",
     "Quote a reply, then type — goes straight to the session that wrote it, no /s needed",
     "",
     "🚀 Run tasks",
@@ -366,7 +367,8 @@ const en: Msgs = {
   ].join("\n"),
   noSessions: "No active Claude sessions.",
   noSessionsDeliver: "No active Claude session — message can't be delivered.",
-  sListUsage: "Usage: /s <number|name|pid> <message>\ne.g. /s 1 hello\nSend /sessions to see the list.",
+  sListUsage:
+    "Usage: /s <number|name|pid> <message>\ne.g. /s 1 hello (a number can be shortened to /1 hello)\nSend /sessions to see the list.",
   notFound: (sel) => `Can't find "${sel}". Send /sessions for the list.`,
   deliveredUnmonitored: (name) =>
     `Delivered to "${name}", but that session isn't monitoring messages (hasn't run /wechat), so it may not be handled promptly.`,
@@ -438,7 +440,7 @@ const en: Msgs = {
       ? "📌 = bound, your messages go here (/use off to unbind)"
       : "📥 = default receiver, plain messages go here (/use <n> to pin)",
   legendRoute: (example) =>
-    `Send to a session with /s <n> <message>, e.g. /s ${example} hello`,
+    `Send to a session with /s <n> <message>, e.g. /s ${example} hello (or /${example} hello)`,
   versionLine: (version) => `📦 Running version: wechat-claude @ v${version}`,
   updateAvailable: (current, latest) =>
     `⬆️ Update available: v${latest} (you have v${current}). On your computer:\nnpm i -g wechat-claude-sessions@latest && wechat-claude daemon restart\nthen in each Claude Code session: /mcp → wechat → Reconnect, and /wechat again.`,

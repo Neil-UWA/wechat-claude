@@ -77,7 +77,7 @@ Send these from WeChat to control routing:
 | Command | Description |
 |---------|-------------|
 | `/sessions` or `/ls` | List active Claude Code sessions (`👀` = monitoring, actively reading messages; `📌 bound` = your messages go here; `📥 default` = plain messages go here). Two lines per entry: `📌 5. fintary:main (fintary-69) 👀` and `dir: fintary/data-sync-field-mapping · active 3h ago`. The leading glyph is 📌 (bound) or 📥 (default receiver) on the one row plain messages go to, and ●/○ (active in the last 2 min or not) elsewhere, so "where do my messages land" reads from the left column; same-named sessions carry the Claude Code cross-session name in parentheses; the directory is where Claude currently is (a worktree as `repo/worktree`). Idle sessions follow under `Idle (N):`. Two legend lines under the list: what the receiver glyph means, and how to `/s` (the example uses a number that is actually listed). Ends with a labelled version paragraph, `📦 Running version: wechat-claude @ v1.2.0`; a dev build shows its full version (e.g. `v1.2.0-dev.session-naming.12.2f0809f`) so test builds can be told apart. When npm has a newer `latest`, an upgrade notice follows (npm is asked at most every 6 hours; the last answer is reused if it can't be reached, and a failed attempt is not retried for 30 minutes) |
-| `/s <number> <message>` | Send message to session by its number. Numbers are stable for a session's lifetime — they never shift when other sessions open or close (retired numbers aren't reused; numbering resets once all sessions are gone) |
+| `/s <number> <message>`<br>`/<number> <message>` | Send message to session by its number (`/3 hi` is short for `/s 3 hi`; the shorthand is digits-only, so a mistyped command is never delivered as if the typo were a session name). Numbers are stable for a session's lifetime — they never shift when other sessions open or close (retired numbers aren't reused; numbering resets once all sessions are gone) |
 | `/use <number\|name\|pid>` | Bind your chat to one session: every plain message goes straight to it (survives daemon restarts). `/use off` unbinds; `/use` shows the current binding. Closing the bound session clears the binding automatically |
 | `/s <name> <message>` | Send message to session by name (fuzzy match; if ambiguous, prefers the monitored / most recently active one) |
 | *(quote a reply, then type)* | **Quote** a session's reply in WeChat and write your answer: the message goes to the session that wrote the quoted reply — no `/s`, and your binding is left alone (see [Quoted replies](#quoted-replies)) |
@@ -314,6 +314,10 @@ session that wrote the quoted reply.
   reply like "make it blue" arrives with the context it needs
 - Quoting a command's output (an `/ls` listing, say) routes nowhere special; the
   usual rules apply
+- Image replies can be quoted too (the send's message ids are recorded with it);
+  the excerpt shows your caption, or `[image]` when there was none
+- Quoting *and* `/s <number>` together is fine: the explicit target wins, and the
+  quoted message still comes along as context
 - If the session that wrote the quoted message is gone, WeChat tells you so and
   the message is routed normally
 

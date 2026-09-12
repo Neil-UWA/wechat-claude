@@ -444,16 +444,6 @@ export class ILinkClient {
     }
   }
 
-  // Error codes carried in a response body (`ret` and/or `errcode`), if any.
-  private async readCodes(res: Response): Promise<number[]> {
-    try {
-      return errorCodes(await res.json());
-    } catch {
-      // Not JSON, or an empty body — nothing to object to.
-      return [];
-    }
-  }
-
   private checkSendResponse(codes: number[], what = "sendmessage"): void {
     if (codes.includes(-14)) {
       throw new Error(this.handleExpiredSession());
@@ -534,11 +524,14 @@ export class ILinkClient {
     };
   }
 
+  // Returns the server ids of what it sent (caption first, if any, then the
+  // image), for the same reason sendText does: a quote of an image reply has
+  // only that id to go on.
   async sendImage(
     toUserId: string,
     filePath: string,
     caption?: string
-  ): Promise<void> {
+  ): Promise<string[]> {
     if (!this.session) throw new Error("Not logged in");
 
     let contextToken = this.contextTokens.get(toUserId);
@@ -553,6 +546,7 @@ export class ILinkClient {
     }
 
     const uploaded = await this.uploadMedia(filePath, toUserId, 1);
+    const messageIds: string[] = [];
 
     if (caption) {
       const textItem: TextItem = { type: 1, text_item: { text: caption } };
@@ -574,7 +568,10 @@ export class ILinkClient {
       });
       if (!textRes.ok)
         throw new Error(`sendmessage (caption) failed: ${textRes.status}`);
-      this.checkSendResponse(await this.readCodes(textRes));
+      const captionRaw = await this.readRaw(textRes);
+      this.checkSendResponse(errorCodes(parseBody(captionRaw)));
+      const captionId = sentMessageId(captionRaw);
+      if (captionId) messageIds.push(captionId);
     }
 
     const imageItem = {
@@ -606,8 +603,12 @@ export class ILinkClient {
       }),
     });
     if (!res.ok) throw new Error(`sendmessage (image) failed: ${res.status}`);
-    this.checkSendResponse(await this.readCodes(res));
+    const raw = await this.readRaw(res);
+    this.checkSendResponse(errorCodes(parseBody(raw)));
+    const id = sentMessageId(raw);
+    if (id) messageIds.push(id);
     markLoginVerified();
+    return messageIds;
   }
 
   // Download and decrypt an incoming CDN media item (e.g. an image the user
