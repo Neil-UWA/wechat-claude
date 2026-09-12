@@ -793,12 +793,15 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
       })
     : undefined;
   // WeChat's quote carries no text at all, so what the quoted message said
-  // comes from the outbox record it matched.
-  const quotedText =
-    (quoteTarget?.kind === "session" ? quoteTarget.quotedText : undefined) ??
-    msg.quote?.quotedText ??
-    "";
-  const excerpt = quoteExcerpt(quotedText);
+  // comes from the outbox record it matched. Only the other source — a client
+  // that put the quote in the message text — has a "nickname:" prefix on it,
+  // and that distinction is what quoteExcerpt's flag is for.
+  const recovered =
+    quoteTarget?.kind === "session" ? quoteTarget.quotedText : undefined;
+  const excerpt =
+    recovered !== undefined
+      ? quoteExcerpt(recovered)
+      : quoteExcerpt(msg.quote?.quotedText ?? "", true);
   // Nothing to excerpt (an image, or a quote we could not place) means nothing
   // to add.
   const withQuote = (body: string): string =>
@@ -1262,6 +1265,10 @@ async function main(): Promise<void> {
             ? {
                 quotedText: quote.quotedText,
                 quotedMessageId: quote.quotedMessageId,
+                // Dropping this would strand the timestamp fallback: it is
+                // the only evidence left for a reply sent before ids were
+                // recorded.
+                quotedAt: quote.quotedAt,
                 fromText: quote.fromText,
               }
             : undefined,

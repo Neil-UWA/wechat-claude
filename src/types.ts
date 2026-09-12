@@ -164,6 +164,14 @@ export type Session = {
   baseUrl: string;
 };
 
+// One chunk of an outgoing text send: the API's 2000-character limit means a
+// long reply becomes several messages, each with its own id, and a quote can
+// name any one of them.
+export type SentChunk = {
+  text: string;
+  messageId?: string;
+};
+
 // A quoted ("引用") reply's reference to the message it answers. See quote.ts.
 export type Quote = {
   // The quoted message's text, as best it can be recovered. May be truncated

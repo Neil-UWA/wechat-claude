@@ -2,8 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   extractQuote,
   extractStructuredQuote,
-  footerSelector,
   matchOutbound,
+  matchOutboundByTime,
+  parseFooter,
   parseTextQuote,
   quoteExcerpt,
   resolveQuoteTarget,
@@ -182,6 +183,22 @@ describe("extractQuote", () => {
     });
   });
 
+  it("carries the quoted message's timestamp, the only other thing WeChat sends", () => {
+    const withRef = msg("在的", {
+      item_list: [
+        {
+          type: 1,
+          ref_msg: { message_item: { msg_id: "out-1", create_time_ms: 1789142249000 } },
+          text_item: { text: "在的" },
+        },
+      ],
+    });
+    expect(extractQuote(withRef, "在的")).toMatchObject({
+      quotedMessageId: "out-1",
+      quotedAt: 1789142249000,
+    });
+  });
+
   it("is undefined when there is no quote", () => {
     expect(extractQuote(msg("在吗"), "在吗")).toBeUndefined();
   });
@@ -205,41 +222,20 @@ describe("matchOutbound", () => {
     expect(got?.sessionId).toBe("100");
   });
 
-  it("matches on the time when the id is unknown and there is no text", () => {
+  it("never matches on time — that is a separate, later resort", () => {
     const rec = record({ messageIds: [], at: 1789142249233 });
-    const got = matchOutbound(
-      { quotedText: "", quotedMessageId: "7504206488704563208", quotedAt: 1789142249000 },
-      [rec]
-    );
-    expect(got?.sessionId).toBe("100");
-  });
-
-  it("does not fall back to time when ids are being recorded and none matched", () => {
-    // The user quoted their own message: it has an id, ours are recorded, and
-    // none of them is it. Whichever session happened to answer at that moment
-    // must not be handed the reply.
-    const answered = record({ messageIds: ["out-1"], at: 1789142249500 });
-    expect(
-      matchOutbound(
-        { quotedText: "", quotedMessageId: "not-ours", quotedAt: 1789142249000 },
-        [answered]
-      )
-    ).toBeUndefined();
-  });
-
-  it("does not match a reply sent minutes from the quoted message", () => {
-    const rec = record({ messageIds: [], at: 1789142249000 - 5 * 60_000 });
     expect(
       matchOutbound({ quotedText: "", quotedAt: 1789142249000 }, [rec])
     ).toBeUndefined();
   });
 
-  it("takes the send closest in time when several are close", () => {
-    const near = record({ sessionId: "200", messageIds: [], at: 1789142249500 });
-    const far = record({ sessionId: "100", messageIds: [], at: 1789142240000 });
+  it("does not let a short reply be the prefix of a longer quote", () => {
+    // "好的" is the start of half of what any session says; matching it would
+    // collect replies meant for whoever actually wrote the longer message.
+    const short = record({ text: "好的" });
     expect(
-      matchOutbound({ quotedText: "", quotedAt: 1789142249000 }, [far, near])?.sessionId
-    ).toBe("200");
+      matchOutbound({ quotedText: "好的，我把缓存清掉再跑一遍构建。" }, [short])
+    ).toBeUndefined();
   });
 
   it("matches a quote the client truncated", () => {
@@ -266,22 +262,30 @@ describe("matchOutbound", () => {
   });
 });
 
-describe("footerSelector", () => {
-  it("reads the session from a quoted reply trailer", () => {
-    expect(footerSelector("done\n—— 来自 backend（#3）· 直接回复: /s 3 <消息>")).toBe("3");
-    expect(footerSelector("done\n—— from backend (#3) · reply directly: /s 3 <message>")).toBe("3");
+describe("parseFooter", () => {
+  it("reads both the session name and the number from a trailer", () => {
+    expect(parseFooter("done\n—— 来自 backend（#3）· 直接回复: /s 3 <消息>")).toEqual({
+      name: "backend",
+      selector: "3",
+    });
+    expect(
+      parseFooter("done\n—— from backend (#3) · reply directly: /s 3 <message>")
+    ).toEqual({ name: "backend", selector: "3" });
   });
 
   it("ignores the worked example in /ls, which is not a trailer", () => {
     // The trailer's "<消息>" placeholder is what distinguishes it; the legend
     // and the sample command in /ls spell out a real message instead.
     expect(
-      footerSelector("用 /s <编号> <消息> 发到指定 session，例: /s 1 你好")
-    ).toBeUndefined();
+      parseFooter("用 /s <编号> <消息> 发到指定 session，例: /s 1 你好")
+    ).toEqual({ name: undefined, selector: undefined });
   });
 
-  it("is undefined when there is no trailer", () => {
-    expect(footerSelector("just a message")).toBeUndefined();
+  it("is empty when there is no trailer", () => {
+    expect(parseFooter("just a message")).toEqual({
+      name: undefined,
+      selector: undefined,
+    });
   });
 });
 
@@ -322,9 +326,62 @@ describe("resolveQuoteTarget", () => {
   it("falls back to the trailer when the outbox has forgotten the message", () => {
     const got = resolveQuoteTarget(
       { quotedText: "老消息\n—— 来自 backend（#3）· 直接回复: /s 3 <消息>" },
-      deps({ records: [], find: (sel) => (sel === "3" ? session() : undefined) })
+      deps({
+        records: [],
+        find: (sel) => (sel === "3" || sel === "backend" ? session() : undefined),
+      })
     );
     expect(got).toEqual({ kind: "session", session: session() });
+  });
+
+  it("trusts the trailer's name over its number", () => {
+    // Session numbers restart at 1 once every session is gone, so a day-old
+    // "#3" can lead to a session that never sent the quoted message.
+    const stranger = session({ id: "500", name: "frontend", pid: 500 });
+    expect(
+      resolveQuoteTarget(
+        { quotedText: "老消息\n—— 来自 backend（#3）· 直接回复: /s 3 <消息>" },
+        deps({
+          records: [],
+          live: [stranger],
+          find: (sel) => (sel === "3" ? stranger : undefined),
+        })
+      )
+    ).toEqual({ kind: "gone", name: "backend" });
+  });
+
+  it("reads the trailer before guessing from a timestamp", () => {
+    // A record sent seconds from the quoted message, but by another session:
+    // the trailer says who wrote it, and it is right.
+    const coincidence = record({
+      sessionId: "700",
+      sessionName: "other",
+      messageIds: [],
+      text: "unrelated",
+      at: 1789142249100,
+    });
+    expect(
+      resolveQuoteTarget(
+        {
+          quotedText: "老消息\n—— 来自 backend（#3）· 直接回复: /s 3 <消息>",
+          quotedAt: 1789142249000,
+        },
+        deps({
+          records: [coincidence],
+          find: (sel) => (sel === "backend" ? session() : undefined),
+        })
+      )
+    ).toEqual({ kind: "session", session: session() });
+  });
+
+  it("uses the timestamp only when nothing better is on offer", () => {
+    const rec = record({ messageIds: [], at: 1789142249100 });
+    expect(
+      resolveQuoteTarget(
+        { quotedText: "", quotedAt: 1789142249000 },
+        deps({ records: [rec] })
+      )
+    ).toMatchObject({ kind: "session", session: session() });
   });
 
   it("is undefined when the quoted message was not a session's", () => {
@@ -335,10 +392,17 @@ describe("resolveQuoteTarget", () => {
 });
 
 describe("quoteExcerpt", () => {
-  it("drops the nickname and the reply trailer", () => {
+  it("drops the nickname the client added, and the reply trailer", () => {
     expect(
-      quoteExcerpt("backend：构建修好了\n—— 来自 backend（#3）· 直接回复: /s 3 <消息>")
+      quoteExcerpt("backend：构建修好了\n—— 来自 backend（#3）· 直接回复: /s 3 <消息>", true)
     ).toBe("构建修好了");
+  });
+
+  it("leaves a colon in text recovered from the outbox alone", () => {
+    // That text is what the session itself sent — there is no nickname on it,
+    // and stripping one would quote it as something it never said.
+    expect(quoteExcerpt("Status: failed")).toBe("Status: failed");
+    expect(quoteExcerpt("Status: failed", true)).toBe("failed");
   });
 
   it("caps long quotes", () => {

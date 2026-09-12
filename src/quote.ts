@@ -185,7 +185,12 @@ const MIN_PREFIX_MATCH = 8;
 function textMatches(quoted: string, sent: string): boolean {
   if (quoted === "" || sent === "") return false;
   if (quoted === sent) return true;
-  if (quoted.length < MIN_PREFIX_MATCH) return false;
+  // Both sides, not just the quote: a session that answered "好的" would
+  // otherwise be the prefix of every longer quote starting that way, and
+  // collect replies meant for whoever actually wrote them.
+  if (quoted.length < MIN_PREFIX_MATCH || sent.length < MIN_PREFIX_MATCH) {
+    return false;
+  }
   return sent.startsWith(quoted) || quoted.startsWith(sent) || sent.includes(quoted);
 }
 
@@ -215,9 +220,11 @@ function matchByTime(
   return best;
 }
 
-// The outbound message a quote refers to. Message id first — when the API
-// gives us one it is exact — then the text, newest record first, and finally
-// the time the quoted message was created.
+// The outbound message a quote refers to, matched on evidence the quote
+// actually carries: the message id when the API gave us one (exact), else the
+// quoted text, newest record first. Timestamps are deliberately not consulted
+// here — see matchOutboundByTime, which is a last resort and must come after
+// the footer.
 export function matchOutbound(
   quote: Quote,
   records: OutboundRecord[]
@@ -236,13 +243,20 @@ export function matchOutbound(
     const sent = normalizeQuoted(r.text);
     return candidates.some((c) => textMatches(c, sent));
   });
-  if (byText) return byText;
+  return byText;
+}
+
+// The last resort: the record sent closest to when the quoted message was
+// created. Only for replies sent before ids were recorded — never a second
+// opinion on an id that simply didn't match. When ids are being recorded and
+// none of them is this one, the quoted message is not a session's at all (the
+// user quoting their own message, say), and guessing by time would hand the
+// reply to whichever session happened to be talking at that moment.
+export function matchOutboundByTime(
+  quote: Quote,
+  records: OutboundRecord[]
+): OutboundRecord | undefined {
   if (!quote.quotedAt) return undefined;
-  // Time is a fallback for records written before ids were captured — never a
-  // second opinion on an id that simply didn't match. When ids are being
-  // recorded and none of them is this one, the quoted message is not a
-  // session's at all (the user quoting their own message, say), and guessing
-  // by time would hand it to whichever session happened to be talking then.
   const haveIds = records.some((r) => (r.messageIds?.length ?? 0) > 0);
   if (quote.quotedMessageId && haveIds) return undefined;
   return matchByTime(quote.quotedAt, records);
@@ -251,11 +265,21 @@ export function matchOutbound(
 // Every reply carries a trailer naming its session ("—— 来自 backend（#3）· 直接
 // 回复: /s 3 <消息>"), so a quote that kept the trailer names the session even
 // when the outbox has already forgotten the message. The placeholder brackets
-// are what keep this from matching the example line in /ls or /help, which
-// spell out a real message instead.
-export function footerSelector(quotedText: string): string | undefined {
-  const m = quotedText.match(/\/s\s+([^\s<>]+)\s+<[^<>]*>/);
-  return m?.[1];
+// are what keep the selector from matching the example line in /ls or /help,
+// which spell out a real message instead.
+//
+// Both halves are read, because they are not equally trustworthy: retired
+// session numbers are never reused, but the counter restarts at 1 once every
+// session is gone, so a day-old "#3" can name a session that never sent the
+// quoted message. The name is the identity; the number is a hint.
+export function parseFooter(quotedText: string): {
+  name?: string;
+  selector?: string;
+} {
+  return {
+    name: quotedText.match(/(?:——|--)\s*(?:来自|from)\s+([^\s（(·]+)/)?.[1],
+    selector: quotedText.match(/\/s\s+([^\s<>]+)\s+<[^<>]*>/)?.[1],
+  };
 }
 
 export type QuoteTarget =
@@ -281,24 +305,49 @@ export function resolveQuoteTarget(
   quote: Quote,
   deps: ResolveDeps
 ): QuoteTarget | undefined {
+  // Id or text: the quote itself says which message this is.
   const record = matchOutbound(quote, deps.records);
-  if (record) {
-    const exact = deps.live.find((s) => s.id === record.sessionId);
-    if (exact) return { kind: "session", session: exact, quotedText: record.text };
-    // The id is a pid, and an MCP server that reconnected got a new one while
-    // remaining the same Claude session the user was talking to. The name is
-    // what survives that, so try it before declaring the session gone.
-    const byName = deps.find(record.sessionName);
-    if (byName) return { kind: "session", session: byName, quotedText: record.text };
-    return { kind: "gone", name: record.sessionName };
+  if (record) return targetFor(record, deps);
+  // Then the trailer, which names its session outright — better evidence than
+  // any timestamp, so it is consulted before one.
+  const footer = footerTarget(quote.quotedText, deps);
+  if (footer) return footer;
+  // And only then the clock.
+  const timed = matchOutboundByTime(quote, deps.records);
+  return timed ? targetFor(timed, deps) : undefined;
+}
+
+function targetFor(record: OutboundRecord, deps: ResolveDeps): QuoteTarget {
+  const exact = deps.live.find((s) => s.id === record.sessionId);
+  if (exact) return { kind: "session", session: exact, quotedText: record.text };
+  // The id is a pid, and an MCP server that reconnected got a new one while
+  // remaining the same Claude session the user was talking to. The name is
+  // what survives that, so try it before declaring the session gone.
+  const byName = deps.find(record.sessionName);
+  if (byName) return { kind: "session", session: byName, quotedText: record.text };
+  return { kind: "gone", name: record.sessionName };
+}
+
+// Resolve a quote from the reply trailer it kept. The name decides; the "#n"
+// selector is accepted only when it still leads to the session that name
+// belongs to, so a recycled number cannot hand the reply to a stranger.
+function footerTarget(
+  quotedText: string,
+  deps: ResolveDeps
+): QuoteTarget | undefined {
+  const { name, selector } = parseFooter(quotedText);
+  if (!name && !selector) return undefined;
+  if (name) {
+    const byName = deps.find(name);
+    if (byName) return { kind: "session", session: byName };
   }
-  const selector = footerSelector(quote.quotedText);
   if (selector) {
-    const target = deps.find(selector);
-    if (target) return { kind: "session", session: target };
-    return { kind: "gone", name: selector };
+    const bySelector = deps.find(selector);
+    if (bySelector && (name === undefined || bySelector.name === name)) {
+      return { kind: "session", session: bySelector };
+    }
   }
-  return undefined;
+  return { kind: "gone", name: name ?? (selector as string) };
 }
 
 // A one-line rendering of the quoted message, for the session that receives
@@ -306,11 +355,16 @@ export function resolveQuoteTarget(
 // without pasting the whole thing back.
 const EXCERPT_MAX = 120;
 
-export function quoteExcerpt(quotedText: string): string {
+// `fromClient` says where the text came from, because only one of the two
+// sources has a "nickname:" prefix to strip. Text recovered from the outbox is
+// what the session itself sent, and stripping there would turn a reply of
+// "Status: failed" into "failed" — a quote of something never said.
+export function quoteExcerpt(quotedText: string, fromClient = false): string {
   const withoutFooter = quotedText
     .split("\n")
     .filter((line) => !/^\s*(——|--)\s*(来自|from)\s/.test(line))
     .join("\n");
-  const flat = normalizeQuoted(stripQuotedNickname(withoutFooter));
+  const body = fromClient ? stripQuotedNickname(withoutFooter) : withoutFooter;
+  const flat = normalizeQuoted(body);
   return flat.length > EXCERPT_MAX ? `${flat.slice(0, EXCERPT_MAX)}…` : flat;
 }

@@ -334,10 +334,18 @@ cannot be recovered.)
 
 Match order: the quoted message's id, then the quoted text (some clients put the
 quote in the message text; a truncated one matches on its prefix), then the
-[reply footer](#reply-footer) inside that text — which spells out `/s <number>`
-itself — and finally a send whose time is within 15 seconds of when the quoted
-message was created. So it still works with the footer turned off
-(`"replyFooter": false`), or for a reply sent by a version that recorded no id.
+[reply footer](#reply-footer) inside that text, and finally a send whose time is
+within 15 seconds of when the quoted message was created. So it still works with
+the footer turned off (`"replyFooter": false`), or for a reply sent by a version
+that recorded no id.
+
+The footer is trusted for the **name** it carries, not its `#number`: retired
+numbers are never reused, but the counter restarts at 1 once every session is
+gone, so a day-old `#3` can lead to a session that never sent that message. When
+the name doesn't check out, the quote is reported as belonging to a session
+that's gone rather than guessed at. The timestamp is likewise a last resort,
+used only when the reply recorded no id at all — so quoting your own message
+can't hand the reply to whichever session happened to be talking at the time.
 
 Since WeChat sends no quoted text, the "you quoted this" excerpt handed to the
 session is reconstructed from the text kept in `outbox.json`.

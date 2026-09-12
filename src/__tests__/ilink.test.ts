@@ -415,6 +415,41 @@ describe("ILinkClient", () => {
       expect(chunk3.length).toBe(500);
     });
 
+    it("returns each chunk with the id the server gave it", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+
+      let n = 0;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation(() => {
+          n += 1;
+          return Promise.resolve(mockFetchResponse({ message_id: `id-${n}` }));
+        })
+      );
+
+      const sent = await client.sendText(TEST_USER_ID, "x".repeat(2500));
+
+      // Per chunk, not per send: the user quotes one message, and pairing it
+      // with the wrong half of a long reply is how the excerpt goes wrong.
+      expect(sent).toEqual([
+        { text: "x".repeat(2000), messageId: "id-1" },
+        { text: "x".repeat(500), messageId: "id-2" },
+      ]);
+    });
+
+    it("reports a chunk with no id rather than dropping it", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({})));
+
+      expect(await client.sendText(TEST_USER_ID, "hello")).toEqual([
+        { text: "hello", messageId: undefined },
+      ]);
+    });
+
     it("throws when not logged in", async () => {
       const client = new ILinkClient();
       await expect(client.sendText(TEST_USER_ID, "hello")).rejects.toThrow("Not logged in");
@@ -783,8 +818,11 @@ describe("sentMessageId", () => {
     );
   });
 
-  it("accepts the id as a string too", () => {
+  it("accepts the id as a string, whatever shape it is", () => {
     expect(sentMessageId('{"msg_id":"123"}')).toBe("123");
+    expect(sentMessageId('{"message_id":"v1:7616463724773447674"}')).toBe(
+      "v1:7616463724773447674"
+    );
   });
 
   it("is undefined when the response carries no id", () => {

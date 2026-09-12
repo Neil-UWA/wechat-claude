@@ -10,6 +10,7 @@ import type {
   PendingMessage,
   QRCodeResponse,
   QRCodeStatusResponse,
+  SentChunk,
   Session,
   TextItem,
   UploadedMedia,
@@ -68,8 +69,13 @@ function errorCodes(body: unknown): number[] {
 // and JSON.parse rounds anything past 2^53, which would leave us matching
 // quotes against an id the server never issued.
 export function sentMessageId(raw: string): string | undefined {
-  const m = raw.match(/"(?:message_id|msg_id|svr_id)"\s*:\s*"?(\d+)"?/);
-  return m?.[1];
+  // A quoted string of any shape, or a bare number kept as written — the
+  // server sends the latter, but an id is an opaque handle and nothing here
+  // should insist it looks numeric.
+  const m = raw.match(
+    /"(?:message_id|msg_id|svr_id)"\s*:\s*(?:"([^"\\]{1,64})"|(\d{1,32}))/
+  );
+  return m?.[1] ?? m?.[2];
 }
 
 function generateClientId(): string {
@@ -379,10 +385,11 @@ export class ILinkClient {
     return data.msgs ?? [];
   }
 
-  // Returns the server ids of the messages actually sent, when the API
-  // reported any. The caller records them so a later quoted ("引用") reply can
-  // be traced back to the session that wrote the quoted message.
-  async sendText(toUserId: string, text: string): Promise<string[]> {
+  // Returns what was sent, chunk by chunk, with the server id of each when the
+  // API reported one. The caller records them so a later quoted ("引用") reply
+  // can be traced back to the session that wrote the quoted message — and to
+  // the right chunk of it, since only one of them is what the user quoted.
+  async sendText(toUserId: string, text: string): Promise<SentChunk[]> {
     if (!this.session) throw new Error("Not logged in");
 
     let contextToken = this.contextTokens.get(toUserId);
@@ -401,7 +408,7 @@ export class ILinkClient {
       chunks.push(text.slice(i, i + TEXT_LIMIT));
     }
 
-    const messageIds: string[] = [];
+    const sent: SentChunk[] = [];
     for (const chunk of chunks) {
       const textItem: TextItem = { type: 1, text_item: { text: chunk } };
       const res = await fetch(`${this.baseUrl}/ilink/bot/sendmessage`, {
@@ -427,11 +434,10 @@ export class ILinkClient {
       // body; without this the send is reported as delivered and the reply
       // is simply lost.
       this.checkSendResponse(errorCodes(parseBody(raw)));
-      const id = sentMessageId(raw);
-      if (id) messageIds.push(id);
+      sent.push({ text: chunk, messageId: sentMessageId(raw) });
       markLoginVerified();
     }
-    return messageIds;
+    return sent;
   }
 
   // The response body as text. Unreadable bodies are "" — an empty body is not
@@ -572,6 +578,7 @@ export class ILinkClient {
       this.checkSendResponse(errorCodes(parseBody(captionRaw)));
       const captionId = sentMessageId(captionRaw);
       if (captionId) messageIds.push(captionId);
+
     }
 
     const imageItem = {
@@ -711,6 +718,9 @@ export class ILinkClient {
           ? {
               quotedText: quote.quotedText,
               quotedMessageId: quote.quotedMessageId,
+              // Same as the daemon's path: without the timestamp a consumer
+              // of processMessages gets a Quote that can never fall back.
+              quotedAt: quote.quotedAt,
               fromText: quote.fromText,
             }
           : undefined,
