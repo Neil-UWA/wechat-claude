@@ -191,7 +191,11 @@ function textMatches(quoted: string, sent: string): boolean {
   if (quoted.length < MIN_PREFIX_MATCH || sent.length < MIN_PREFIX_MATCH) {
     return false;
   }
-  return sent.startsWith(quoted) || quoted.startsWith(sent) || sent.includes(quoted);
+  // Prefixes only, in either direction: that is what truncation (the client
+  // cut the quote short) and the trailer (we sent more than came back) look
+  // like. Matching text buried inside a longer message would let a newer reply
+  // that merely mentions the quoted line win over the message itself.
+  return sent.startsWith(quoted) || quoted.startsWith(sent);
 }
 
 // How far apart the server's idea of when a message was created and ours of
@@ -212,7 +216,10 @@ function matchByTime(
   let bestGap = TIME_MATCH_MS;
   for (const r of records) {
     const gap = Math.abs(r.at - quotedAt);
-    if (gap <= bestGap) {
+    // Strictly closer, so a tie keeps the first — records arrive newest first,
+    // and WeChat reports the quoted time only to the second, which makes ties
+    // ordinary rather than rare.
+    if (gap < bestGap) {
       best = r;
       bestGap = gap;
     }
@@ -333,15 +340,30 @@ export function resolveQuoteTarget(
   return timed ? targetFor(timed, deps) : undefined;
 }
 
+// Two sessions are the same one when nothing says otherwise: Claude Code's
+// name is the durable identity, and a record or a session missing it (an older
+// build, or no usable `ps`) cannot contradict anything.
+function identityConflicts(s: SessionInfo, record: OutboundRecord): boolean {
+  return (
+    record.claudeName !== undefined &&
+    s.claudeName !== undefined &&
+    s.claudeName !== record.claudeName
+  );
+}
+
 function targetFor(record: OutboundRecord, deps: ResolveDeps): QuoteTarget {
-  const exact = deps.live.find((s) => s.id === record.sessionId);
-  if (exact) return { kind: "session", session: exact, quotedText: record.text };
-  // The session id is a pid, and an MCP server that reconnected got a new one
-  // while remaining the same Claude session the user was talking to. Claude
-  // Code's own name is what identifies it across that — the routing name is
-  // not: it is derived from repo and branch, so two sessions in one checkout
-  // share it, and a name freed by an exit is handed to the next session that
-  // opens there. Following it would answer a stranger in the right directory.
+  // The session id is a pid. Over the day a record lives, the OS can hand that
+  // pid to something else, so it counts only while the identity agrees.
+  const samePid = deps.live.find((s) => s.id === record.sessionId);
+  if (samePid && !identityConflicts(samePid, record)) {
+    return { kind: "session", session: samePid, quotedText: record.text };
+  }
+  // An MCP server that reconnected got a new pid while remaining the same
+  // Claude session the user was talking to. Claude Code's own name is what
+  // identifies it across that — the routing name is not: it is derived from
+  // repo and branch, so two sessions in one checkout share it, and a name
+  // freed by an exit is handed to the next session opened there. Following it
+  // would answer a stranger in the right directory.
   const reconnected = record.claudeName
     ? deps.live.find((s) => s.claudeName === record.claudeName)
     : undefined;
@@ -359,18 +381,25 @@ function footerTarget(
   deps: ResolveDeps
 ): QuoteTarget | undefined {
   const { name, selector } = parseFooter(quotedText);
-  if (!name && !selector) return undefined;
-  if (name) {
-    const byName = deps.find(name);
-    if (byName) return { kind: "session", session: byName };
-  }
-  if (selector) {
-    const bySelector = deps.find(selector);
-    if (bySelector && (name === undefined || bySelector.name === name)) {
-      return { kind: "session", session: bySelector };
+  if (name === undefined && selector === undefined) return undefined;
+  if (name !== undefined) {
+    // Exactly this name, not findSession's fuzzy match: a trailer from
+    // "backend" must not be answered by "backend-api", and when two live
+    // sessions really do share the name, the trailer's stable number is what
+    // separates them.
+    const named = deps.live.filter((s) => s.name === name);
+    if (named.length === 1) return { kind: "session", session: named[0] };
+    if (named.length > 1 && selector !== undefined) {
+      const picked = deps.find(selector);
+      if (picked && named.some((s) => s.id === picked.id)) {
+        return { kind: "session", session: picked };
+      }
     }
+    return { kind: "gone", name };
   }
-  return { kind: "gone", name: name ?? (selector as string) };
+  const bySelector = deps.find(selector as string);
+  if (bySelector) return { kind: "session", session: bySelector };
+  return { kind: "gone", name: selector as string };
 }
 
 // A one-line rendering of the quoted message, for the session that receives

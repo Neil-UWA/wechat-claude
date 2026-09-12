@@ -40,6 +40,10 @@ function msg(text: string, extra: Record<string, unknown> = {}): WeixinMessage {
   } as WeixinMessage;
 }
 
+// Fixed, not Date.now(): these helpers are compared with toEqual, and two
+// calls a millisecond apart would differ in a field nothing here is testing.
+const SENT_AT = 1789142249000;
+
 function record(over: Partial<OutboundRecord> = {}): OutboundRecord {
   return {
     sessionId: "100",
@@ -48,7 +52,7 @@ function record(over: Partial<OutboundRecord> = {}): OutboundRecord {
     userId: "u@im.wechat",
     text: "构建已经修好了，是缓存没清。",
     messageIds: ["out-1"],
-    at: Date.now(),
+    at: SENT_AT,
     ...over,
   };
 }
@@ -60,7 +64,7 @@ function session(over: Partial<SessionInfo> = {}): SessionInfo {
     claudeName: "backend-7a",
     cwd: "/repo",
     pid: 100,
-    lastActive: Date.now(),
+    lastActive: SENT_AT,
     ...over,
   };
 }
@@ -273,6 +277,31 @@ describe("matchOutbound", () => {
       .toBe("200");
   });
 
+  it("does not match text buried inside a newer, different message", () => {
+    // Records arrive newest first; a reply that merely mentions the quoted
+    // line must not win over the message that is the quoted line.
+    const quoting = record({
+      sessionId: "200",
+      claudeName: "other-1b",
+      text: "关于「构建已经修好了，是缓存没清。」这句，我有个补充",
+    });
+    const original = record();
+    expect(
+      matchOutbound({ quotedText: "构建已经修好了，是缓存没清。" }, [quoting, original])
+        ?.sessionId
+    ).toBe("100");
+  });
+
+  it("keeps the newer record when two are equally close in time", () => {
+    // WeChat reports the quoted time to the second, so ties are ordinary.
+    const newer = record({ sessionId: "200", messageIds: [], at: SENT_AT + 1000 });
+    const older = record({ sessionId: "100", messageIds: [], at: SENT_AT - 1000 });
+    expect(
+      matchOutboundByTime({ quotedText: "", quotedAt: SENT_AT }, [newer, older])
+        ?.sessionId
+    ).toBe("200");
+  });
+
   it("does not match on a scrap of text", () => {
     expect(matchOutbound({ quotedText: "好" }, [record({ text: "好的" })])).toBeUndefined();
   });
@@ -340,6 +369,31 @@ describe("resolveQuoteTarget", () => {
       deps({ live: [restarted] })
     );
     expect(got).toMatchObject({ kind: "session", session: restarted });
+  });
+
+  it("does not accept a recycled pid", () => {
+    // Session ids are pids, and the OS reuses them well within the day a
+    // record lives. Same number, different Claude session, different person's
+    // conversation.
+    const recycled = session({ claudeName: "someone-else" });
+    expect(
+      resolveQuoteTarget(
+        { quotedText: "构建已经修好了，是缓存没清。" },
+        deps({ live: [recycled] })
+      )
+    ).toMatchObject({ kind: "gone", name: "backend" });
+  });
+
+  it("accepts the pid when neither side claims an identity", () => {
+    // An older record, or a machine where `ps` told us nothing: the pid is all
+    // there is, and it is still the best evidence available.
+    const unnamed = session({ claudeName: undefined });
+    expect(
+      resolveQuoteTarget(
+        { quotedText: "构建已经修好了，是缓存没清。" },
+        deps({ records: [record({ claudeName: undefined })], live: [unnamed] })
+      )
+    ).toMatchObject({ kind: "session", session: unnamed });
   });
 
   it("does not hand the reply to a stranger with the same routing name", () => {
@@ -426,6 +480,35 @@ describe("resolveQuoteTarget", () => {
         deps({ records: [rec] })
       )
     ).toMatchObject({ kind: "session", session: session() });
+  });
+
+  it("will not answer a trailer from \"backend\" with \"backend-api\"", () => {
+    // findSession matches fuzzily, which is right for a person typing "/s
+    // back" and wrong for deciding who wrote a message.
+    const other = session({ id: "800", name: "backend-api", pid: 800 });
+    expect(
+      resolveQuoteTarget(
+        { quotedText: "老消息\n—— 来自 backend（#3）· 直接回复: /s 3 <消息>" },
+        deps({ records: [], live: [other], find: () => other })
+      )
+    ).toEqual({ kind: "gone", name: "backend" });
+  });
+
+  it("separates two sessions sharing a name by the trailer's number", () => {
+    // Routing names are auto-detected, so a checkout with two sessions has two
+    // of them; the stable number is what tells them apart.
+    const first = session({ id: "900", pid: 900, claudeName: "a" });
+    const second = session({ id: "901", pid: 901, claudeName: "b" });
+    expect(
+      resolveQuoteTarget(
+        { quotedText: "老消息\n—— 来自 backend（#3）· 直接回复: /s 3 <消息>" },
+        deps({
+          records: [],
+          live: [first, second],
+          find: (sel) => (sel === "3" ? second : undefined),
+        })
+      )
+    ).toEqual({ kind: "session", session: second });
   });
 
   it("is undefined when the quoted message was not a session's", () => {

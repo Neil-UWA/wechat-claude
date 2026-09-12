@@ -478,7 +478,9 @@ server.tool(
       // no text in it to excerpt, so the caption — or the marker, when there
       // was none — stands in for it.
       recordChunk(to_user_id, {
-        text: caption ?? marker("image", getLang()),
+        // `||`: an explicitly empty caption is treated as absent when sending,
+        // and must be here too, or the image records an excerpt of nothing.
+        text: caption || marker("image", getLang()),
         messageId: imageIds[0],
       });
       await client.sendTyping(to_user_id, false);

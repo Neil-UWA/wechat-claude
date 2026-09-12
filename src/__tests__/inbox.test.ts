@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { tmpdir } from "node:os";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  existsSync,
+  utimesSync,
+} from "node:fs";
 import path from "node:path";
 import type { PendingMessage } from "../types.js";
 
@@ -84,5 +92,22 @@ describe("inbox", () => {
     writeToInbox("s1", msg("1", "ok"));
     const parsed = JSON.parse(readFileSync(path.join(inboxDir, "s1.json"), "utf-8"));
     expect(parsed.length).toBe(1);
+  });
+});
+
+describe("file lock", () => {
+  it("steals a lock its holder crashed with, rather than writing unlocked", () => {
+    // The budget has to outlast the staleness threshold: a shorter one can
+    // never reach the steal, and every contender would fall through to an
+    // unlocked read-modify-write — which is how messages get lost.
+    const lock = path.join(inboxDir, "s1.json.lock");
+    mkdirSync(lock, { recursive: true });
+    const ancient = Date.now() - 60_000;
+    utimesSync(lock, ancient / 1000, ancient / 1000);
+
+    writeToInbox("s1", msg("1", "after the crash"));
+
+    expect(readInbox("s1").map((m) => m.text)).toEqual(["after the crash"]);
+    expect(existsSync(lock)).toBe(false);
   });
 });
