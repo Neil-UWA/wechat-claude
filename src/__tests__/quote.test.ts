@@ -44,6 +44,7 @@ function record(over: Partial<OutboundRecord> = {}): OutboundRecord {
   return {
     sessionId: "100",
     sessionName: "backend",
+    claudeName: "backend-7a",
     userId: "u@im.wechat",
     text: "构建已经修好了，是缓存没清。",
     messageIds: ["out-1"],
@@ -56,6 +57,7 @@ function session(over: Partial<SessionInfo> = {}): SessionInfo {
   return {
     id: "100",
     name: "backend",
+    claudeName: "backend-7a",
     cwd: "/repo",
     pid: 100,
     lastActive: Date.now(),
@@ -222,6 +224,20 @@ describe("matchOutbound", () => {
     expect(got?.sessionId).toBe("100");
   });
 
+  it("still matches an id-less record on time while newer records have ids", () => {
+    // The 24 hours it takes the outbox to turn over: one session's replies
+    // carry ids, an older record does not, and quoting that older reply must
+    // still work.
+    const legacy = record({ messageIds: [], at: 1789142249100, text: "老回复" });
+    const modern = record({ sessionId: "200", messageIds: ["out-9"], at: 1789142249050 });
+    expect(
+      matchOutboundByTime(
+        { quotedText: "", quotedMessageId: "unmatched", quotedAt: 1789142249000 },
+        [modern, legacy]
+      )?.sessionId
+    ).toBe("100");
+  });
+
   it("never matches on time — that is a separate, later resort", () => {
     const rec = record({ messageIds: [], at: 1789142249233 });
     expect(
@@ -281,6 +297,14 @@ describe("parseFooter", () => {
     ).toEqual({ name: undefined, selector: undefined });
   });
 
+  it("keeps a routing name that contains brackets", () => {
+    // validateSessionName allows anything without whitespace, so the name has
+    // to be read up to the trailer's own separator.
+    expect(
+      parseFooter("done\n—— 来自 api(v2)（#3）· 直接回复: /s 3 <消息>").name
+    ).toBe("api(v2)");
+  });
+
   it("is empty when there is no trailer", () => {
     expect(parseFooter("just a message")).toEqual({
       name: undefined,
@@ -308,19 +332,39 @@ describe("resolveQuoteTarget", () => {
     });
   });
 
-  it("follows the name when that session's MCP server reconnected under a new pid", () => {
+  it("follows a reconnect by Claude Code's session name, not the routing name", () => {
+    // Same Claude session, new MCP server, new pid.
     const restarted = session({ id: "300", pid: 300 });
     const got = resolveQuoteTarget(
       { quotedText: "构建已经修好了，是缓存没清。" },
-      deps({ live: [restarted], find: (sel) => (sel === "backend" ? restarted : undefined) })
+      deps({ live: [restarted] })
     );
     expect(got).toMatchObject({ kind: "session", session: restarted });
   });
 
-  it("reports the session as gone when nothing answers to its name", () => {
+  it("does not hand the reply to a stranger with the same routing name", () => {
+    // Routing names come from repo and branch, so a second session in the same
+    // checkout — or the next one opened after this one exited — wears the same
+    // one. It is not the session the user was talking to.
+    const namesake = session({ id: "400", pid: 400, claudeName: "someone-else" });
+    expect(
+      resolveQuoteTarget(
+        { quotedText: "构建已经修好了，是缓存没清。" },
+        deps({ live: [namesake], find: () => namesake })
+      )
+    ).toMatchObject({ kind: "gone", name: "backend" });
+  });
+
+  it("reports the session as gone, but still says what was quoted", () => {
+    // The message is still delivered somewhere, and that session should see
+    // the quote rather than a bare "fix it".
     expect(
       resolveQuoteTarget({ quotedText: "构建已经修好了，是缓存没清。" }, deps({ live: [] }))
-    ).toEqual({ kind: "gone", name: "backend" });
+    ).toEqual({
+      kind: "gone",
+      name: "backend",
+      quotedText: "构建已经修好了，是缓存没清。",
+    });
   });
 
   it("falls back to the trailer when the outbox has forgotten the message", () => {

@@ -208,7 +208,7 @@ with `SendMessage`, tells you on WeChat which session it went to and how to
 ├── session.json          # ilink bot token (persisted login)
 ├── config.json           # optional settings (e.g. repoDirs for /run)
 ├── bindings.json         # /use bindings (WeChat user -> session)
-├── outbox.json           # recent replies per session (how a quoted reply finds its session; 24h)
+├── outbox.json           # recent replies per session (how a quoted reply finds its session; 24h; written via temp file + rename, so a reader never sees a partial file)
 ├── session-numbers.json  # stable session number registry
 ├── media/                # downloaded incoming images (7-day retention)
 ├── context_tokens.json   # shared context tokens (daemon ↔ MCP server)
@@ -331,6 +331,14 @@ looked up by id.
 (That id is 19 digits, past 2^53, so `JSON.parse` rounds its last digits away —
 it is read out of the raw response text with a regex instead. Once parsed it
 cannot be recovered.)
+
+Each record also keeps Claude Code's own name for the session. A session id is a
+pid, and `/mcp` hands out a new one, but it is still the session you were
+talking to — that name follows it across the reconnect. The WeChat routing name
+is deliberately *not* used for this: it is derived from repo and branch, so two
+sessions in one checkout share it and an exited session's name passes to the
+next one opened there — following it would answer a stranger. When the identity
+doesn't check out, the quote is reported as belonging to a session that's gone.
 
 Match order: the quoted message's id, then the quoted text (some clients put the
 quote in the message text; a truncated one matches on its prefix), then the

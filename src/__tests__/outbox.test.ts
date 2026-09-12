@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { tmpdir } from "node:os";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 
 const testHome = mkdtempSync(path.join(tmpdir(), "wc-outbox-test-"));
@@ -67,6 +74,21 @@ describe("outbox", () => {
     expect(listOutbound()).toEqual([]);
     send({ text: "after" });
     expect(listOutbound().map((r) => r.text)).toEqual(["after"]);
+  });
+
+  it("leaves no temp file behind, and never a half-written one", () => {
+    // The daemon reads this file without the lock on every quoted message, so
+    // writes go through a rename rather than truncating in place.
+    send({ text: "one" });
+    send({ text: "two" });
+    const strays = readdirSync(wechatDir).filter((f) => f.includes(".tmp"));
+    expect(strays).toEqual([]);
+    expect(JSON.parse(readFileSync(outboxFile, "utf-8"))).toHaveLength(2);
+  });
+
+  it("keeps the Claude session name, which outlives the pid", () => {
+    send({ claudeName: "backend-7a" });
+    expect(listOutbound()[0].claudeName).toBe("backend-7a");
   });
 
   it("caps how much it remembers", () => {

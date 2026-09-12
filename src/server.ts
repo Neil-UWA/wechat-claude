@@ -117,17 +117,20 @@ function currentSessionInfo(): SessionInfo {
 }
 
 // Record one outbox entry per sent chunk, so a quote resolves to the chunk the
-// user actually quoted rather than to the head of a long reply.
-function recordChunks(userId: string, chunks: SentChunk[]): void {
-  for (const chunk of chunks) {
-    recordOutbound({
-      sessionId,
-      sessionName: sessionName.value,
-      userId,
-      text: chunk.text,
-      messageIds: chunk.messageId ? [chunk.messageId] : [],
-    });
-  }
+// user actually quoted rather than to the head of a long reply. Passed to
+// sendText as its per-chunk callback: a chunk that reached WeChat is recorded
+// then and there, whether or not the rest of the send succeeds.
+function recordChunk(userId: string, chunk: SentChunk): void {
+  recordOutbound({
+    sessionId,
+    sessionName: sessionName.value,
+    // What identifies this session after its MCP server reconnects under a
+    // new pid — see outbox.ts. Re-read each time, as currentSessionInfo does.
+    claudeName: ownClaudeSessionName(process.ppid),
+    userId,
+    text: chunk.text,
+    messageIds: chunk.messageId ? [chunk.messageId] : [],
+  });
 }
 
 function register(): void {
@@ -414,15 +417,14 @@ server.tool(
         text,
         replyFooter(sessionId, sessionName.value)
       );
-      const chunks = await client.sendText(to_user_id, sent);
+      // Each chunk is recorded as it lands, which is what lets a quoted
+      // ("引用") reply to it route straight back here with no "/s <name>".
+      await client.sendText(to_user_id, sent, (chunk) =>
+        recordChunk(to_user_id, chunk)
+      );
       // Tells the daemon this session actually answered, so its silence
       // watchdog (usage-limit detection) stops tracking the delivery.
       markReplied(sessionId, to_user_id);
-      // And lets it route a quoted ("引用") reply to this message straight
-      // back here, with no "/s <name>" needed. One record per chunk: a long
-      // reply goes out as several messages, and the user quotes exactly one
-      // of them — recording them together would answer with the wrong half.
-      recordChunks(to_user_id, chunks);
       await client.sendTyping(to_user_id, false);
       return {
         content: [
@@ -462,21 +464,22 @@ server.tool(
       // limit; sendImage sends its caption as a single item and would fail
       // once the footer pushed a long caption over that limit. Same order as
       // sendImage's own caption handling: text first, then the image.
-      const captionChunks = fullCaption
-        ? await client.sendText(to_user_id, fullCaption)
-        : [];
+      // The caption is recorded as it goes out, not after the image: it is
+      // already in the user's chat and quotable, and an upload that fails
+      // afterwards must not leave it unresolvable.
+      if (fullCaption) {
+        await client.sendText(to_user_id, fullCaption, (chunk) =>
+          recordChunk(to_user_id, chunk)
+        );
+      }
       const imageIds = await client.sendImage(to_user_id, file_path);
       markReplied(sessionId, to_user_id);
-      recordChunks(to_user_id, captionChunks);
       // The image is its own message and can be quoted on its own. There is
       // no text in it to excerpt, so the caption — or the marker, when there
       // was none — stands in for it.
-      recordOutbound({
-        sessionId,
-        sessionName: sessionName.value,
-        userId: to_user_id,
+      recordChunk(to_user_id, {
         text: caption ?? marker("image", getLang()),
-        messageIds: imageIds,
+        messageId: imageIds[0],
       });
       await client.sendTyping(to_user_id, false);
       return {

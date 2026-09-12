@@ -177,7 +177,7 @@ session 用 `SendMessage` 找它时要用的（见 `ListAgents`）。`wechat_sta
 ├── session.json          # ilink 机器人 token（持久化登录）
 ├── config.json           # 可选配置（例如 /run 用的 repoDirs）
 ├── bindings.json         # /use 绑定关系（微信用户 -> session）
-├── outbox.json           # 各 session 最近发出的回复（引用回复靠它定位 session，留 24 小时）
+├── outbox.json           # 各 session 最近发出的回复（引用回复靠它定位 session，留 24 小时；写入走临时文件+rename，读的人不会读到写到一半的内容）
 ├── session-numbers.json  # 稳定 session 编号注册表
 ├── media/                # 下载的图片（保留 7 天）
 ├── context_tokens.json   # 共享上下文 token（daemon ↔ MCP server）
@@ -284,6 +284,11 @@ id，留 24 小时、最多 200 条），引用进来时按 id 反查是谁说�
 
 （这个 id 是 19 位数字、超过 2^53，`JSON.parse` 会把末尾几位抹成 0，所以它是从响应的原始
 文本里正则取出来的 —— 解析过一遍就再也救不回来了。）
+
+记录里还有 Claude Code 给这个 session 起的名字。session id 就是 pid，`/mcp` 重连会换一个，
+但那还是你刚才在说话的同一个 session —— 认这个名字就能跟过去。**不认微信路由名**：路由名是
+按"仓库:分支"自动取的，同一个仓库里的两个 session 会重名，退出后这个名字也会落到下一个在那里
+打开的 session 身上，跟过去就是答错了人。认不出来就直说"那个 session 已经退出了"。
 
 匹配顺序：被引用消息的 id → 被引用的原文（有的客户端会把引用塞进文字里，截断的按前缀匹配）
 → 被引用内容里的[回复尾注](#回复尾注) → 发送时间与被引用消息创建时间相差 15 秒内的那条。

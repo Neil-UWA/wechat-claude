@@ -257,9 +257,16 @@ export function matchOutboundByTime(
   records: OutboundRecord[]
 ): OutboundRecord | undefined {
   if (!quote.quotedAt) return undefined;
-  const haveIds = records.some((r) => (r.messageIds?.length ?? 0) > 0);
-  if (quote.quotedMessageId && haveIds) return undefined;
-  return matchByTime(quote.quotedAt, records);
+  // A quote that carries an id has already failed to match every record that
+  // has one, so those records are answered: this is not their message. What
+  // is left are the records from before ids were captured, and only those may
+  // be matched on time — otherwise quoting one's own message would be handed
+  // to whichever session happened to be talking at that moment. Records with
+  // no id keep working throughout the day it takes the outbox to turn over.
+  const candidates = quote.quotedMessageId
+    ? records.filter((r) => (r.messageIds?.length ?? 0) === 0)
+    : records;
+  return matchByTime(quote.quotedAt, candidates);
 }
 
 // Every reply carries a trailer naming its session ("—— 来自 backend（#3）· 直接
@@ -276,8 +283,15 @@ export function parseFooter(quotedText: string): {
   name?: string;
   selector?: string;
 } {
+  // The name runs to the "·" that separates the trailer's halves, minus the
+  // optional "（#3）". Excluding brackets from the name instead would truncate
+  // a legitimate routing name like "api(v2)" — validateSessionName allows
+  // anything without whitespace.
+  const name = quotedText
+    .match(/(?:——|--)\s*(?:来自|from)\s+(.+?)(?:\s*[（(]#\d+[）)])?\s*·/)?.[1]
+    ?.trim();
   return {
-    name: quotedText.match(/(?:——|--)\s*(?:来自|from)\s+([^\s（(·]+)/)?.[1],
+    name: name === "" ? undefined : name,
     selector: quotedText.match(/\/s\s+([^\s<>]+)\s+<[^<>]*>/)?.[1],
   };
 }
@@ -288,8 +302,10 @@ export type QuoteTarget =
   // carries an id and a timestamp but never the text, so this is the only way
   // the receiving session can be shown what it is answering.
   | { kind: "session"; session: SessionInfo; quotedText?: string }
-  // We know which session wrote it, and that session is gone.
-  | { kind: "gone"; name: string };
+  // We know which session wrote it, and that session is gone. The text comes
+  // along anyway: the message still gets delivered somewhere, and that session
+  // should see what was quoted.
+  | { kind: "gone"; name: string; quotedText?: string };
 
 export type ResolveDeps = {
   records: OutboundRecord[];
@@ -320,12 +336,19 @@ export function resolveQuoteTarget(
 function targetFor(record: OutboundRecord, deps: ResolveDeps): QuoteTarget {
   const exact = deps.live.find((s) => s.id === record.sessionId);
   if (exact) return { kind: "session", session: exact, quotedText: record.text };
-  // The id is a pid, and an MCP server that reconnected got a new one while
-  // remaining the same Claude session the user was talking to. The name is
-  // what survives that, so try it before declaring the session gone.
-  const byName = deps.find(record.sessionName);
-  if (byName) return { kind: "session", session: byName, quotedText: record.text };
-  return { kind: "gone", name: record.sessionName };
+  // The session id is a pid, and an MCP server that reconnected got a new one
+  // while remaining the same Claude session the user was talking to. Claude
+  // Code's own name is what identifies it across that — the routing name is
+  // not: it is derived from repo and branch, so two sessions in one checkout
+  // share it, and a name freed by an exit is handed to the next session that
+  // opens there. Following it would answer a stranger in the right directory.
+  const reconnected = record.claudeName
+    ? deps.live.find((s) => s.claudeName === record.claudeName)
+    : undefined;
+  if (reconnected) {
+    return { kind: "session", session: reconnected, quotedText: record.text };
+  }
+  return { kind: "gone", name: record.sessionName, quotedText: record.text };
 }
 
 // Resolve a quote from the reply trailer it kept. The name decides; the "#n"

@@ -796,8 +796,7 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   // comes from the outbox record it matched. Only the other source — a client
   // that put the quote in the message text — has a "nickname:" prefix on it,
   // and that distinction is what quoteExcerpt's flag is for.
-  const recovered =
-    quoteTarget?.kind === "session" ? quoteTarget.quotedText : undefined;
+  const recovered = quoteTarget?.quotedText;
   const excerpt =
     recovered !== undefined
       ? quoteExcerpt(recovered)

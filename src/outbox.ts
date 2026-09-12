@@ -13,10 +13,15 @@ import { OUTBOX_FILE, ensureDirs } from "./paths.js";
 
 export type OutboundRecord = {
   sessionId: string;
-  // The session's WeChat routing name as it was when it sent this. Kept so a
-  // reply can still find the session after its MCP server reconnected under a
-  // new pid (and therefore a new session id).
+  // The session's WeChat routing name as it was when it sent this. Shown to
+  // the user when the session it belongs to is gone.
   sessionName: string;
+  // Claude Code's own name for the session (see claude-sessions.ts). Unlike
+  // the routing name — auto-detected from repo and branch, so two sessions in
+  // one checkout share it — this identifies the session a user was actually
+  // talking to, and it survives the MCP server reconnecting under a new pid.
+  // Absent when it could not be determined.
+  claudeName?: string;
   userId: string;
   // Exactly what went out, trailer included — that is what the user sees in
   // the quote bubble, so that is what a quote has to be matched against.
@@ -62,9 +67,14 @@ export function recordOutbound(
         text: record.text.slice(0, MAX_TEXT),
         at,
       });
-      fs.writeFileSync(OUTBOX_FILE, JSON.stringify(fresh(records, at)), {
-        mode: 0o600,
-      });
+      // Written to a temp file and renamed, not written in place: the daemon
+      // reads this on every quoted message without taking the lock, and
+      // writeFileSync truncates first — a reader landing in that window sees
+      // an empty or half-written file, which load() cannot tell from "no
+      // records" and would silently drop the quote. rename is atomic.
+      const tmp = `${OUTBOX_FILE}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(fresh(records, at)), { mode: 0o600 });
+      fs.renameSync(tmp, OUTBOX_FILE);
     });
   } catch {}
 }

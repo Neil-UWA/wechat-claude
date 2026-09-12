@@ -389,7 +389,17 @@ export class ILinkClient {
   // API reported one. The caller records them so a later quoted ("引用") reply
   // can be traced back to the session that wrote the quoted message — and to
   // the right chunk of it, since only one of them is what the user quoted.
-  async sendText(toUserId: string, text: string): Promise<SentChunk[]> {
+  //
+  // `onChunk` fires as each chunk lands, before the next is attempted. A long
+  // reply is several messages, and if the third fails the first two are
+  // already in the user's chat: throwing away their ids because the send as a
+  // whole failed would leave messages that are quotable on screen and
+  // unresolvable here.
+  async sendText(
+    toUserId: string,
+    text: string,
+    onChunk?: (chunk: SentChunk) => void
+  ): Promise<SentChunk[]> {
     if (!this.session) throw new Error("Not logged in");
 
     let contextToken = this.contextTokens.get(toUserId);
@@ -434,7 +444,9 @@ export class ILinkClient {
       // body; without this the send is reported as delivered and the reply
       // is simply lost.
       this.checkSendResponse(errorCodes(parseBody(raw)));
-      sent.push({ text: chunk, messageId: sentMessageId(raw) });
+      const record: SentChunk = { text: chunk, messageId: sentMessageId(raw) };
+      sent.push(record);
+      onChunk?.(record);
       markLoginVerified();
     }
     return sent;

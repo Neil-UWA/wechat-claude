@@ -439,6 +439,33 @@ describe("ILinkClient", () => {
       ]);
     });
 
+    it("hands over each chunk as it lands, so a later failure loses none", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+
+      let n = 0;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation(() => {
+          n += 1;
+          // The third message never arrives; the first two are already in the
+          // user's chat, quotable, and must stay resolvable.
+          if (n === 3) return Promise.resolve(mockFetchResponse({}, 500));
+          return Promise.resolve(mockFetchResponse({ message_id: `id-${n}` }));
+        })
+      );
+
+      const seen: string[] = [];
+      await expect(
+        client.sendText(TEST_USER_ID, "x".repeat(4500), (chunk) => {
+          if (chunk.messageId) seen.push(chunk.messageId);
+        })
+      ).rejects.toThrow("sendmessage failed: 500");
+
+      expect(seen).toEqual(["id-1", "id-2"]);
+    });
+
     it("reports a chunk with no id rather than dropping it", async () => {
       const client = new ILinkClient();
       client.setSession(TEST_SESSION);
