@@ -14,7 +14,9 @@ vi.mock("node:os", async () => {
   };
 });
 
-const { routingLines } = await import("../routing.js");
+const { routingLines, parseRouteCommand, isBareRouteCommand } = await import(
+  "../routing.js"
+);
 const { setBinding, clearBinding } = await import("../bindings.js");
 
 const WECHAT_DIR = path.join(testHome, ".claude", "wechat");
@@ -113,5 +115,62 @@ describe("routingLines", () => {
 
   it("returns no default line when there are no sessions", () => {
     expect(routingLines("100")).toEqual([]);
+  });
+});
+
+describe("parseRouteCommand", () => {
+  it("reads /s <target> <message>", () => {
+    expect(parseRouteCommand("/s 3 你好")).toEqual({
+      selector: "3",
+      message: "你好",
+    });
+    expect(parseRouteCommand("/s backend deploy now")).toEqual({
+      selector: "backend",
+      message: "deploy now",
+    });
+  });
+
+  it("accepts the /3 shorthand people actually type", () => {
+    expect(parseRouteCommand("/3 你好")).toEqual({
+      selector: "3",
+      message: "你好",
+    });
+  });
+
+  it("keeps the message intact, newlines and all", () => {
+    expect(parseRouteCommand("/2 line one\nline two")?.message).toBe(
+      "line one\nline two"
+    );
+  });
+
+  it("claims nothing but the two routing forms", () => {
+    // The shorthand is digits-only, so a mistyped command stays a plain
+    // message instead of being routed to a session named after the typo, and
+    // a real command is never mistaken for a selector.
+    expect(parseRouteCommand("/lss hi")).toBeUndefined();
+    expect(parseRouteCommand("/close 3 all")).toBeUndefined();
+    expect(parseRouteCommand("/use 2")).toBeUndefined();
+  });
+
+  it("is undefined for anything that isn't a routing command", () => {
+    expect(parseRouteCommand("在吗")).toBeUndefined();
+    expect(parseRouteCommand("/s 3")).toBeUndefined();
+    expect(parseRouteCommand("/3")).toBeUndefined();
+  });
+});
+
+describe("isBareRouteCommand", () => {
+  it("recognises a routing command with nothing to route", () => {
+    expect(isBareRouteCommand("/s")).toBe(true);
+    expect(isBareRouteCommand("/s 3")).toBe(true);
+    expect(isBareRouteCommand("/3")).toBe(true);
+    expect(isBareRouteCommand("/3  ")).toBe(true);
+  });
+
+  it("leaves a complete command, and ordinary text, alone", () => {
+    expect(isBareRouteCommand("/s 3 hi")).toBe(false);
+    expect(isBareRouteCommand("/3 hi")).toBe(false);
+    expect(isBareRouteCommand("/ls")).toBe(false);
+    expect(isBareRouteCommand("在吗")).toBe(false);
   });
 });

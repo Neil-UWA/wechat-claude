@@ -21,10 +21,12 @@ import {
   SESSION_EXPIRED,
   SESSION_REPLACED,
 } from "./ilink.js";
+import { getLang, marker } from "./i18n.js";
 import { loginVerification, verificationNote } from "./login-state.js";
 import { PKG_VERSION } from "./version.js";
 import { peekInbox as peekInboxFor, readInbox as readInboxFor } from "./inbox.js";
 import { isMonitoring, touchHeartbeat } from "./monitoring.js";
+import { recordOutbound } from "./outbox.js";
 import { markReplied } from "./replies.js";
 import { replyFooter, withReplyFooter } from "./reply-footer.js";
 import { routingLines } from "./routing.js";
@@ -37,6 +39,7 @@ import {
   TYPING_DIR,
   ensureDirs as ensureWechatDirs,
 } from "./paths.js";
+import type { SentChunk } from "./types.js";
 import {
   type SessionInfo,
   cwdLabel,
@@ -111,6 +114,23 @@ function currentSessionInfo(): SessionInfo {
     // genuinely separate session (see supersededIds()).
     claudePid: process.ppid,
   };
+}
+
+// Record one outbox entry per sent chunk, so a quote resolves to the chunk the
+// user actually quoted rather than to the head of a long reply. Passed to
+// sendText as its per-chunk callback: a chunk that reached WeChat is recorded
+// then and there, whether or not the rest of the send succeeds.
+function recordChunk(userId: string, chunk: SentChunk): void {
+  recordOutbound({
+    sessionId,
+    sessionName: sessionName.value,
+    // What identifies this session after its MCP server reconnects under a
+    // new pid — see outbox.ts. Re-read each time, as currentSessionInfo does.
+    claudeName: ownClaudeSessionName(process.ppid),
+    userId,
+    text: chunk.text,
+    messageIds: chunk.messageId ? [chunk.messageId] : [],
+  });
 }
 
 function register(): void {
@@ -393,9 +413,14 @@ server.tool(
     if (!client.isLoggedIn) return NOT_LOGGED_IN;
     try {
       clearTyping(to_user_id);
-      await client.sendText(
-        to_user_id,
-        withReplyFooter(text, replyFooter(sessionId, sessionName.value))
+      const sent = withReplyFooter(
+        text,
+        replyFooter(sessionId, sessionName.value)
+      );
+      // Each chunk is recorded as it lands, which is what lets a quoted
+      // ("引用") reply to it route straight back here with no "/s <name>".
+      await client.sendText(to_user_id, sent, (chunk) =>
+        recordChunk(to_user_id, chunk)
       );
       // Tells the daemon this session actually answered, so its silence
       // watchdog (usage-limit detection) stops tracking the delivery.
@@ -439,9 +464,25 @@ server.tool(
       // limit; sendImage sends its caption as a single item and would fail
       // once the footer pushed a long caption over that limit. Same order as
       // sendImage's own caption handling: text first, then the image.
-      if (fullCaption) await client.sendText(to_user_id, fullCaption);
-      await client.sendImage(to_user_id, file_path);
+      // The caption is recorded as it goes out, not after the image: it is
+      // already in the user's chat and quotable, and an upload that fails
+      // afterwards must not leave it unresolvable.
+      if (fullCaption) {
+        await client.sendText(to_user_id, fullCaption, (chunk) =>
+          recordChunk(to_user_id, chunk)
+        );
+      }
+      const imageIds = await client.sendImage(to_user_id, file_path);
       markReplied(sessionId, to_user_id);
+      // The image is its own message and can be quoted on its own. There is
+      // no text in it to excerpt, so the caption — or the marker, when there
+      // was none — stands in for it.
+      recordChunk(to_user_id, {
+        // `||`: an explicitly empty caption is treated as absent when sending,
+        // and must be here too, or the image records an excerpt of nothing.
+        text: caption || marker("image", getLang()),
+        messageId: imageIds[0],
+      });
       await client.sendTyping(to_user_id, false);
       return {
         content: [

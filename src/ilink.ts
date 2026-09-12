@@ -10,12 +10,14 @@ import type {
   PendingMessage,
   QRCodeResponse,
   QRCodeStatusResponse,
+  SentChunk,
   Session,
   TextItem,
   UploadedMedia,
   WeixinMessage,
 } from "./types.js";
 import { clearLoginVerified, markLoginVerified } from "./login-state.js";
+import { extractQuote } from "./quote.js";
 import { decryptCdnMedia, extractText, imageExtension } from "./utils.js";
 
 export const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
@@ -41,6 +43,14 @@ function generateUin(): string {
   return Buffer.from(String(n)).toString("base64");
 }
 
+function parseBody(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
 // `ret` and `errcode` both appear across this API, sometimes together.
 function errorCodes(body: unknown): number[] {
   if (typeof body !== "object" || body === null) return [];
@@ -48,6 +58,24 @@ function errorCodes(body: unknown): number[] {
   return [data.ret, data.errcode].filter(
     (c): c is number => typeof c === "number"
   );
+}
+
+// The id the server assigned to a message we just sent — the one exact way to
+// recognise a quote of that message later (a quoted reply carries the quoted
+// message's id and nothing else).
+//
+// Read out of the raw response text, not the parsed body, on purpose: the API
+// sends it as a bare JSON number of 19 digits ({"message_id":7504206776136071048})
+// and JSON.parse rounds anything past 2^53, which would leave us matching
+// quotes against an id the server never issued.
+export function sentMessageId(raw: string): string | undefined {
+  // A quoted string of any shape, or a bare number kept as written — the
+  // server sends the latter, but an id is an opaque handle and nothing here
+  // should insist it looks numeric.
+  const m = raw.match(
+    /"(?:message_id|msg_id|svr_id)"\s*:\s*(?:"([^"\\]{1,64})"|(\d{1,32}))/
+  );
+  return m?.[1] ?? m?.[2];
 }
 
 function generateClientId(): string {
@@ -357,7 +385,21 @@ export class ILinkClient {
     return data.msgs ?? [];
   }
 
-  async sendText(toUserId: string, text: string): Promise<void> {
+  // Returns what was sent, chunk by chunk, with the server id of each when the
+  // API reported one. The caller records them so a later quoted ("引用") reply
+  // can be traced back to the session that wrote the quoted message — and to
+  // the right chunk of it, since only one of them is what the user quoted.
+  //
+  // `onChunk` fires as each chunk lands, before the next is attempted. A long
+  // reply is several messages, and if the third fails the first two are
+  // already in the user's chat: throwing away their ids because the send as a
+  // whole failed would leave messages that are quotable on screen and
+  // unresolvable here.
+  async sendText(
+    toUserId: string,
+    text: string,
+    onChunk?: (chunk: SentChunk) => void
+  ): Promise<SentChunk[]> {
     if (!this.session) throw new Error("Not logged in");
 
     let contextToken = this.contextTokens.get(toUserId);
@@ -376,6 +418,7 @@ export class ILinkClient {
       chunks.push(text.slice(i, i + TEXT_LIMIT));
     }
 
+    const sent: SentChunk[] = [];
     for (const chunk of chunks) {
       const textItem: TextItem = { type: 1, text_item: { text: chunk } };
       const res = await fetch(`${this.baseUrl}/ilink/bot/sendmessage`, {
@@ -396,21 +439,26 @@ export class ILinkClient {
       });
 
       if (!res.ok) throw new Error(`sendmessage failed: ${res.status}`);
+      const raw = await this.readRaw(res);
       // A revoked token comes back as HTTP 200 with an error code in the
       // body; without this the send is reported as delivered and the reply
       // is simply lost.
-      this.checkSendResponse(await this.readCodes(res));
+      this.checkSendResponse(errorCodes(parseBody(raw)));
+      const record: SentChunk = { text: chunk, messageId: sentMessageId(raw) };
+      sent.push(record);
+      onChunk?.(record);
       markLoginVerified();
     }
+    return sent;
   }
 
-  // Error codes carried in a response body (`ret` and/or `errcode`), if any.
-  private async readCodes(res: Response): Promise<number[]> {
+  // The response body as text. Unreadable bodies are "" — an empty body is not
+  // an error in itself, and the codes check treats it as "nothing to object to".
+  private async readRaw(res: Response): Promise<string> {
     try {
-      return errorCodes(await res.json());
+      return await res.text();
     } catch {
-      // Not JSON, or an empty body — nothing to object to.
-      return [];
+      return "";
     }
   }
 
@@ -494,11 +542,14 @@ export class ILinkClient {
     };
   }
 
+  // Returns the server ids of what it sent (caption first, if any, then the
+  // image), for the same reason sendText does: a quote of an image reply has
+  // only that id to go on.
   async sendImage(
     toUserId: string,
     filePath: string,
     caption?: string
-  ): Promise<void> {
+  ): Promise<string[]> {
     if (!this.session) throw new Error("Not logged in");
 
     let contextToken = this.contextTokens.get(toUserId);
@@ -513,6 +564,7 @@ export class ILinkClient {
     }
 
     const uploaded = await this.uploadMedia(filePath, toUserId, 1);
+    const messageIds: string[] = [];
 
     if (caption) {
       const textItem: TextItem = { type: 1, text_item: { text: caption } };
@@ -534,7 +586,11 @@ export class ILinkClient {
       });
       if (!textRes.ok)
         throw new Error(`sendmessage (caption) failed: ${textRes.status}`);
-      this.checkSendResponse(await this.readCodes(textRes));
+      const captionRaw = await this.readRaw(textRes);
+      this.checkSendResponse(errorCodes(parseBody(captionRaw)));
+      const captionId = sentMessageId(captionRaw);
+      if (captionId) messageIds.push(captionId);
+
     }
 
     const imageItem = {
@@ -566,8 +622,12 @@ export class ILinkClient {
       }),
     });
     if (!res.ok) throw new Error(`sendmessage (image) failed: ${res.status}`);
-    this.checkSendResponse(await this.readCodes(res));
+    const raw = await this.readRaw(res);
+    this.checkSendResponse(errorCodes(parseBody(raw)));
+    const id = sentMessageId(raw);
+    if (id) messageIds.push(id);
     markLoginVerified();
+    return messageIds;
   }
 
   // Download and decrypt an incoming CDN media item (e.g. an image the user
@@ -654,13 +714,28 @@ export class ILinkClient {
       const text = extractText(msg);
       if (!text) continue;
 
+      // Same treatment as the daemon's loop: a quoted reply's text is the
+      // quote bubble plus what the user typed, and only the latter is the
+      // message.
+      const quote = extractQuote(msg, text);
+
       const pending: PendingMessage = {
         id: msg.message_id,
         fromUserId: msg.from_user_id,
-        text,
+        text: quote?.body ?? text,
         contextToken: msg.context_token,
         timestamp: msg.create_time_ms,
         rawItems: msg.item_list,
+        quote: quote
+          ? {
+              quotedText: quote.quotedText,
+              quotedMessageId: quote.quotedMessageId,
+              // Same as the daemon's path: without the timestamp a consumer
+              // of processMessages gets a Quote that can never fall back.
+              quotedAt: quote.quotedAt,
+              fromText: quote.fromText,
+            }
+          : undefined,
       };
 
       newMessages.push(pending);

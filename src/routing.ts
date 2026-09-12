@@ -45,3 +45,22 @@ export function routingLines(selfId: string): string[] {
   }
   return lines;
 }
+
+// "/s <target> <message>", plus the "/3 <message>" shorthand for a session
+// number. The shorthand is digits-only on purpose: no command starts with a
+// digit, so it can never swallow a mistyped one ("/lss hi" stays a plain
+// message rather than being routed to a session called "lss").
+export function parseRouteCommand(
+  text: string
+): { selector: string; message: string } | undefined {
+  const m =
+    text.match(/^\/s\s+(\S+)\s+([\s\S]+)$/) ??
+    text.match(/^\/(\d+)\s+([\s\S]+)$/);
+  return m ? { selector: m[1], message: m[2] } : undefined;
+}
+
+// A routing command with no message to route: "/s", "/s 3", "/3". Answered
+// with usage rather than delivered anywhere.
+export function isBareRouteCommand(text: string): boolean {
+  return /^\/s(\s+\S+)?\s*$/.test(text) || /^\/\d+\s*$/.test(text);
+}

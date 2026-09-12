@@ -34,6 +34,7 @@ import {
   EXPIRED_FLAG_FILE,
   INBOX_DIR,
   MEDIA_DIR,
+  RAW_LOG_FILE,
   SESSIONS_DIR,
   TYPING_DIR,
   WECHAT_DIR,
@@ -52,6 +53,13 @@ import {
   sortedSessions,
 } from "./sessions.js";
 import { peekInbox, writeToInbox } from "./inbox.js";
+import { isBareRouteCommand, parseRouteCommand } from "./routing.js";
+import { listOutbound } from "./outbox.js";
+import {
+  extractQuote,
+  quoteExcerpt,
+  resolveQuoteTarget,
+} from "./quote.js";
 import { CLAUDE_CONFIG_FILE, ensureBypassAccepted } from "./claude-config.js";
 import { type Lang, formatAgo, getLang, marker, t } from "./i18n.js";
 import { checkForUpdate } from "./version.js";
@@ -125,6 +133,15 @@ async function enrichImages(
       log(`Image download failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+}
+
+// Append the untouched message to raw.log when WECHAT_DEBUG_RAW=1, before
+// anything has interpreted it.
+function logRaw(msg: WeixinMessage): void {
+  if (process.env.WECHAT_DEBUG_RAW !== "1") return;
+  try {
+    fs.appendFileSync(RAW_LOG_FILE, `${JSON.stringify(msg)}\n`, { mode: 0o600 });
+  } catch {}
 }
 
 function getParentPid(pid: number): number | undefined {
@@ -765,6 +782,30 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     });
   };
 
+  // Resolved once, before any dispatch: plain routing wants the session the
+  // quote points at, and every path that delivers wants the quoted text, so
+  // the receiving session knows which of its own messages is being answered.
+  const quoteTarget = msg.quote
+    ? resolveQuoteTarget(msg.quote, {
+        records: listOutbound(msg.fromUserId),
+        live: listSessions(),
+        find: (selector) => findSession(selector),
+      })
+    : undefined;
+  // WeChat's quote carries no text at all, so what the quoted message said
+  // comes from the outbox record it matched. Only the other source — a client
+  // that put the quote in the message text — has a "nickname:" prefix on it,
+  // and that distinction is what quoteExcerpt's flag is for.
+  const recovered = quoteTarget?.quotedText;
+  const excerpt =
+    recovered !== undefined
+      ? quoteExcerpt(recovered)
+      : quoteExcerpt(msg.quote?.quotedText ?? "", true);
+  // Nothing to excerpt (an image, or a quote we could not place) means nothing
+  // to add.
+  const withQuote = (body: string): string =>
+    excerpt === "" ? body : m.quotedContext(excerpt, body);
+
   if (text === "/usage" || text === "/limit" || text === "/用量") {
     sendReply(m.usageChecking);
     void (async () => {
@@ -1038,22 +1079,22 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     return;
   }
 
-  const bareRoute = text.match(/^\/s(?:\s+(\S+))?\s*$/);
-  if (bareRoute) {
+  if (isBareRouteCommand(text)) {
     sendReply(m.sListUsage);
     return;
   }
 
-  const routeMatch = text.match(/^\/s\s+(\S+)\s+([\s\S]+)$/);
+  const routeMatch = parseRouteCommand(text);
   if (routeMatch) {
-    const selector = routeMatch[1];
-    const message = routeMatch[2];
+    const { selector, message } = routeMatch;
     const target = findSession(selector);
     if (!target) {
       sendReply(m.notFound(selector));
       return;
     }
-    const routed: PendingMessage = { ...msg, text: message };
+    // A quote alongside an explicit target is still context the session needs:
+    // the user can see the quote in their own chat.
+    const routed: PendingMessage = { ...msg, text: withQuote(message) };
     writeToInbox(target.id, routed);
     trackDelivery(routed, target.id, target.name);
     if (!isMonitoring(target.id)) {
@@ -1067,9 +1108,23 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   }
 
   const sessions = listSessions();
+
+  // A quoted reply says which session it is for: the one that wrote the quoted
+  // message. That beats both the binding and the default target — quoting is
+  // the user pointing at a session, and it is a one-off, so the binding is
+  // left alone.
+  let quoted: SessionInfo | undefined;
+  if (quoteTarget?.kind === "session") {
+    quoted = quoteTarget.session;
+  } else if (quoteTarget?.kind === "gone") {
+    // Only worth saying where the quote was the routing decision; with an
+    // explicit "/s <n>" the user already said where this goes.
+    sendReply(m.quoteSessionGone(quoteTarget.name));
+  }
+
   // A bound session wins; otherwise prefer sessions that are actively
   // monitoring their inbox and, among those, the most recently active one.
-  const boundId = getBinding(msg.fromUserId);
+  const boundId = quoted ? undefined : getBinding(msg.fromUserId);
   let target = boundId
     ? sessions.find((s) => s.id === boundId)
     : undefined;
@@ -1077,20 +1132,31 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     clearBinding(msg.fromUserId);
     sendReply(m.bindingCleared);
   }
-  target = target ?? getDefaultTarget(sessions);
+  target = quoted ?? target ?? getDefaultTarget(sessions);
   if (!target) {
     sendReply(m.noSessionsDeliver);
     return;
   }
-  writeToInbox(target.id, msg);
-  trackDelivery(msg, target.id, target.name);
+  const delivered: PendingMessage = { ...msg, text: withQuote(msg.text) };
+  writeToInbox(target.id, delivered);
+  trackDelivery(delivered, target.id, target.name);
   if (!isMonitoring(target.id)) {
-    sendReply(m.deliveredNoneMonitored(target.name));
+    // A quote picked this session out, so the honest warning is about that one
+    // session, not about nobody monitoring anything.
+    sendReply(
+      quoted
+        ? m.deliveredUnmonitored(target.name)
+        : m.deliveredNoneMonitored(target.name)
+    );
   }
   noteUsageLimit(client, msg.fromUserId);
   markTyping(msg.fromUserId);
   client.startTypingKeepAlive(msg.fromUserId);
-  log(`Routed to ${target.name} (${target.id})`);
+  log(
+    quoted
+      ? `Routed by quote to ${target.name} (${target.id})`
+      : `Routed to ${target.name} (${target.id})`
+  );
 }
 
 function log(msg: string): void {
@@ -1175,19 +1241,36 @@ async function main(): Promise<void> {
       }
 
       for (const msg of rawMsgs) {
+        logRaw(msg);
         if (msg.message_type !== 1 || msg.message_state !== 2) continue;
         client.trackContextToken(msg.from_user_id, msg.context_token);
 
         const text = extractText(msg, getLang());
         if (!text) continue;
 
+        // A quoted reply carries the quoted message inside its text; the
+        // session should be handed what the user typed, not the bubble around
+        // it, and the quote itself decides where that goes (see routeMessage).
+        const quote = extractQuote(msg, text);
+
         const pending: PendingMessage = {
           id: msg.message_id,
           fromUserId: msg.from_user_id,
-          text,
+          text: quote?.body ?? text,
           contextToken: msg.context_token,
           timestamp: msg.create_time_ms,
           rawItems: msg.item_list,
+          quote: quote
+            ? {
+                quotedText: quote.quotedText,
+                quotedMessageId: quote.quotedMessageId,
+                // Dropping this would strand the timestamp fallback: it is
+                // the only evidence left for a reply sent before ids were
+                // recorded.
+                quotedAt: quote.quotedAt,
+                fromText: quote.fromText,
+              }
+            : undefined,
         };
 
         await enrichImages(client, pending);

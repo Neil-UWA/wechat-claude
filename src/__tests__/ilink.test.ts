@@ -12,7 +12,7 @@ vi.mock("node:os", async () => {
   return { ...actual, default: { ...actual.default, homedir: () => testHome }, homedir: () => testHome };
 });
 
-const { ILinkClient } = await import("../ilink.js");
+const { ILinkClient, sentMessageId } = await import("../ilink.js");
 
 const WECHAT_DIR = path.join(testHome, ".claude", "wechat");
 const SESSION_FILE = path.join(WECHAT_DIR, "session.json");
@@ -415,6 +415,68 @@ describe("ILinkClient", () => {
       expect(chunk3.length).toBe(500);
     });
 
+    it("returns each chunk with the id the server gave it", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+
+      let n = 0;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation(() => {
+          n += 1;
+          return Promise.resolve(mockFetchResponse({ message_id: `id-${n}` }));
+        })
+      );
+
+      const sent = await client.sendText(TEST_USER_ID, "x".repeat(2500));
+
+      // Per chunk, not per send: the user quotes one message, and pairing it
+      // with the wrong half of a long reply is how the excerpt goes wrong.
+      expect(sent).toEqual([
+        { text: "x".repeat(2000), messageId: "id-1" },
+        { text: "x".repeat(500), messageId: "id-2" },
+      ]);
+    });
+
+    it("hands over each chunk as it lands, so a later failure loses none", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+
+      let n = 0;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation(() => {
+          n += 1;
+          // The third message never arrives; the first two are already in the
+          // user's chat, quotable, and must stay resolvable.
+          if (n === 3) return Promise.resolve(mockFetchResponse({}, 500));
+          return Promise.resolve(mockFetchResponse({ message_id: `id-${n}` }));
+        })
+      );
+
+      const seen: string[] = [];
+      await expect(
+        client.sendText(TEST_USER_ID, "x".repeat(4500), (chunk) => {
+          if (chunk.messageId) seen.push(chunk.messageId);
+        })
+      ).rejects.toThrow("sendmessage failed: 500");
+
+      expect(seen).toEqual(["id-1", "id-2"]);
+    });
+
+    it("reports a chunk with no id rather than dropping it", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({})));
+
+      expect(await client.sendText(TEST_USER_ID, "hello")).toEqual([
+        { text: "hello", messageId: undefined },
+      ]);
+    });
+
     it("throws when not logged in", async () => {
       const client = new ILinkClient();
       await expect(client.sendText(TEST_USER_ID, "hello")).rejects.toThrow("Not logged in");
@@ -770,5 +832,28 @@ describe("ILinkClient", () => {
       expect(status.pendingCount).toBe(1);
       expect(status.trackedUsers).toBe(1);
     });
+  });
+});
+
+describe("sentMessageId", () => {
+  it("keeps every digit of an id JSON.parse would round off", () => {
+    // A real response. The id is 19 digits — past 2^53, so parsing the body
+    // and reading the field back gives 7504206776136071000, which matches no
+    // quote the server will ever send.
+    expect(sentMessageId('{"message_id":7504206776136071048}')).toBe(
+      "7504206776136071048"
+    );
+  });
+
+  it("accepts the id as a string, whatever shape it is", () => {
+    expect(sentMessageId('{"msg_id":"123"}')).toBe("123");
+    expect(sentMessageId('{"message_id":"v1:7616463724773447674"}')).toBe(
+      "v1:7616463724773447674"
+    );
+  });
+
+  it("is undefined when the response carries no id", () => {
+    expect(sentMessageId('{"ret":0}')).toBeUndefined();
+    expect(sentMessageId("")).toBeUndefined();
   });
 });

@@ -164,6 +164,31 @@ export type Session = {
   baseUrl: string;
 };
 
+// One chunk of an outgoing text send: the API's 2000-character limit means a
+// long reply becomes several messages, each with its own id, and a quote can
+// name any one of them.
+export type SentChunk = {
+  text: string;
+  messageId?: string;
+};
+
+// A quoted ("引用") reply's reference to the message it answers. See quote.ts.
+export type Quote = {
+  // The quoted message's text, as best it can be recovered. May be truncated
+  // by the sending client, and may still carry a "nickname:" prefix.
+  quotedText: string;
+  // The quoted message's server id, when the API gave us a structured quote.
+  quotedMessageId?: string;
+  // When the quoted message was created (ms), from the same structured quote.
+  // WeChat sends a quote as an id and a timestamp and no text at all, so this
+  // is half of everything we get.
+  quotedAt?: number;
+  // Whether the quote was carried in the message text (and so was stripped out
+  // of it). The receiving session is shown an excerpt in that case even when
+  // the quote resolves to nothing, because the context is otherwise lost.
+  fromText?: boolean;
+};
+
 export type PendingMessage = {
   id: string;
   fromUserId: string;
@@ -171,4 +196,8 @@ export type PendingMessage = {
   contextToken: string;
   timestamp: number;
   rawItems: MessageItem[];
+  // Set when the user quoted a message: `text` is then only what they typed,
+  // and this says what they quoted — which is how the daemon routes the reply
+  // back to the session that wrote it, without a "/s <name>" prefix.
+  quote?: Quote;
 };
