@@ -17,6 +17,7 @@ import {
   restartDaemonForNewLogin,
 } from "./daemon-control.js";
 import {
+  CONTEXT_TOKEN_REJECTED,
   ILinkClient,
   SESSION_EXPIRED,
   SESSION_REPLACED,
@@ -208,6 +209,20 @@ function sendFailure(err: unknown): ToolResult {
       isError: true,
     };
   }
+  // Not a login problem — re-scanning the QR code would not help. WeChat only
+  // lets a bot reply within a window opened by the user's own last message,
+  // and that window has closed. Nothing can reach the user until they write.
+  if (msg.includes(CONTEXT_TOKEN_REJECTED)) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: "Send failed: WeChat rejected the reply (sendmessage ret -2) because the conversation's reply window has closed — the user has not messaged for a long time (the window lasts about 24 h), or too many replies were sent since their last message. The login is fine; do NOT ask for a re-login. Keep this reply, and send it again as soon as the user's next WeChat message arrives (any message reopens the window). If the user is at the terminal, tell them to send any message on WeChat.",
+        },
+      ],
+      isError: true,
+    };
+  }
   return { content: [{ type: "text", text: `Send failed: ${msg}` }], isError: true };
 }
 
@@ -382,11 +397,9 @@ server.tool(
     if (msgs.length === 0) {
       return { content: [{ type: "text", text: "No new messages." }] };
     }
-    for (const m of msgs) {
-      if (m.contextToken && m.fromUserId) {
-        client.trackContextToken(m.fromUserId, m.contextToken);
-      }
-    }
+    // No trackContextToken here: the daemon already saved each message's
+    // token when it arrived, and the one in an inbox entry can be older than
+    // the user's latest message to another session.
     const formatted = msgs.map((m) => {
       const time = new Date(m.timestamp).toLocaleString("zh-CN");
       return `[${time}] ${m.fromUserId}:\n${m.text}`;

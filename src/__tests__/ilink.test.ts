@@ -12,7 +12,7 @@ vi.mock("node:os", async () => {
   return { ...actual, default: { ...actual.default, homedir: () => testHome }, homedir: () => testHome };
 });
 
-const { ILinkClient, sentMessageId } = await import("../ilink.js");
+const { CONTEXT_TOKEN_REJECTED, ILinkClient, sentMessageId } = await import("../ilink.js");
 
 const WECHAT_DIR = path.join(testHome, ".claude", "wechat");
 const SESSION_FILE = path.join(WECHAT_DIR, "session.json");
@@ -177,6 +177,39 @@ describe("ILinkClient", () => {
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(body.msg.context_token).toBe("ctx-from-file");
+    });
+
+    it("prefers the file's token over a stale one held in memory", async () => {
+      // A long-lived MCP server: it saw the user's first message, and the
+      // daemon has saved newer tokens since. Replying on the old one is ret -2.
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-old");
+      fs.writeFileSync(CONTEXT_TOKENS_FILE, JSON.stringify({ [TEST_USER_ID]: "ctx-new" }));
+
+      const mockFetch = vi.fn().mockResolvedValue(mockFetchResponse({}));
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.sendText(TEST_USER_ID, "hello");
+
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).msg.context_token).toBe("ctx-new");
+    });
+
+    it("trackContextToken writes only its own user, keeping others on disk", () => {
+      const client = new ILinkClient();
+      client.trackContextToken("a@im.wechat", "tok-a-old");
+      // Another process (the daemon) updates both users afterwards.
+      fs.writeFileSync(
+        CONTEXT_TOKENS_FILE,
+        JSON.stringify({ "a@im.wechat": "tok-a-new", "b@im.wechat": "tok-b" })
+      );
+      client.trackContextToken("c@im.wechat", "tok-c");
+
+      expect(JSON.parse(fs.readFileSync(CONTEXT_TOKENS_FILE, "utf-8"))).toEqual({
+        "a@im.wechat": "tok-a-new",
+        "b@im.wechat": "tok-b",
+        "c@im.wechat": "tok-c",
+      });
     });
   });
 
@@ -496,6 +529,17 @@ describe("ILinkClient", () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({}, 500)));
 
       await expect(client.sendText(TEST_USER_ID, "hello")).rejects.toThrow("sendmessage failed: 500");
+    });
+
+    it("names a ret -2 as a rejected context_token, not a dead login", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ ret: -2 })));
+
+      await expect(client.sendText(TEST_USER_ID, "hello")).rejects.toThrow(CONTEXT_TOKEN_REJECTED);
+      // The login itself is fine and must survive.
+      expect(client.isLoggedIn).toBe(true);
     });
 
     // A revoked token answers HTTP 200 with the error in the body. Reading

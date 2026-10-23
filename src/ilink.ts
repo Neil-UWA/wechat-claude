@@ -30,6 +30,12 @@ export const SESSION_EXPIRED = "Session expired, please login again";
 // it as expired; the fresh credential has been adopted, so retry.
 export const SESSION_REPLACED =
   "Session was replaced by a newer login — retry with the new credential";
+// sendmessage answered ret -2: WeChat would not accept this reply on the
+// conversation's context_token. A token only covers a limited window after the
+// user's last message (about 24 h, and a handful of replies), so after a long
+// silence there is nothing to send with until the user writes again.
+export const CONTEXT_TOKEN_REJECTED =
+  "WeChat rejected the reply's context_token (ret -2)";
 export const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
 const BASE_INFO = { channel_version: "1.0.0" } as const;
 const TEXT_LIMIT = 2000;
@@ -37,6 +43,18 @@ const WECHAT_DIR = path.join(os.homedir(), ".claude", "wechat");
 const SESSION_FILE = path.join(WECHAT_DIR, "session.json");
 const OLD_SESSION_FILE = path.join(os.homedir(), ".claude", "wechat-session.json");
 const CONTEXT_TOKENS_FILE = path.join(WECHAT_DIR, "context_tokens.json");
+
+function readContextTokensFile(): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(CONTEXT_TOKENS_FILE, "utf-8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed)) if (typeof v === "string") out[k] = v;
+    return out;
+  } catch {
+    return {};
+  }
+}
 
 function generateUin(): string {
   const n = crypto.randomBytes(4).readUInt32BE();
@@ -242,32 +260,35 @@ export class ILinkClient {
     this.updatesCursor = cursor;
   }
 
+  // Writes only this user's entry, merged into what is on disk: every MCP
+  // server shares the file with the daemon, and writing back a whole in-memory
+  // map would put stale tokens over the fresh ones the daemon just saved.
   trackContextToken(userId: string, token: string): void {
     this.contextTokens.set(userId, token);
-    this.saveContextTokens();
-  }
-
-  private saveContextTokens(): void {
+    const data = readContextTokensFile();
+    if (data[userId] === token) return;
+    data[userId] = token;
+    const tmp = `${CONTEXT_TOKENS_FILE}.${process.pid}.tmp`;
     try {
-      const data: Record<string, string> = {};
-      for (const [k, v] of this.contextTokens) data[k] = v;
-      fs.writeFileSync(CONTEXT_TOKENS_FILE, JSON.stringify(data));
-    } catch {}
-  }
-
-  private loadContextTokens(): void {
-    try {
-      if (!fs.existsSync(CONTEXT_TOKENS_FILE)) {
-        process.stderr.write(`[wechat-claude] context_tokens.json not found at ${CONTEXT_TOKENS_FILE}\n`);
-        return;
-      }
-      const data = JSON.parse(fs.readFileSync(CONTEXT_TOKENS_FILE, "utf-8")) as Record<string, string>;
-      for (const [k, v] of Object.entries(data)) {
-        if (!this.contextTokens.has(k)) this.contextTokens.set(k, v);
-      }
-    } catch (err) {
-      process.stderr.write(`[wechat-claude] loadContextTokens failed: ${err}\n`);
+      fs.mkdirSync(WECHAT_DIR, { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify(data));
+      fs.renameSync(tmp, CONTEXT_TOKENS_FILE);
+    } catch {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {}
     }
+  }
+
+  // The token to reply with. The file wins over memory: the daemon receives
+  // every message and saves each one's token there, while an MCP server only
+  // sees the messages routed to it. A long-lived session that kept the token
+  // it first read replied on a context WeChat had long since closed (ret -2),
+  // even after the user had written again.
+  private contextTokenFor(userId: string): string | undefined {
+    const onDisk = readContextTokensFile()[userId];
+    if (onDisk) this.contextTokens.set(userId, onDisk);
+    return this.contextTokens.get(userId);
   }
 
   get baseUrl(): string {
@@ -402,11 +423,7 @@ export class ILinkClient {
   ): Promise<SentChunk[]> {
     if (!this.session) throw new Error("Not logged in");
 
-    let contextToken = this.contextTokens.get(toUserId);
-    if (!contextToken) {
-      this.loadContextTokens();
-      contextToken = this.contextTokens.get(toUserId);
-    }
+    const contextToken = this.contextTokenFor(toUserId);
     if (!contextToken) {
       throw new Error(
         `No context_token for user ${toUserId}. They must send a message first.`
@@ -465,6 +482,9 @@ export class ILinkClient {
   private checkSendResponse(codes: number[], what = "sendmessage"): void {
     if (codes.includes(-14)) {
       throw new Error(this.handleExpiredSession());
+    }
+    if (what.startsWith("sendmessage") && codes.includes(-2)) {
+      throw new Error(`${what}: ${CONTEXT_TOKEN_REJECTED}`);
     }
     const errCode = codes.find((c) => c !== 0);
     if (errCode !== undefined) {
@@ -552,11 +572,7 @@ export class ILinkClient {
   ): Promise<string[]> {
     if (!this.session) throw new Error("Not logged in");
 
-    let contextToken = this.contextTokens.get(toUserId);
-    if (!contextToken) {
-      this.loadContextTokens();
-      contextToken = this.contextTokens.get(toUserId);
-    }
+    const contextToken = this.contextTokenFor(toUserId);
     if (!contextToken) {
       throw new Error(
         `No context_token for user ${toUserId}. They must send a message first.`
@@ -670,11 +686,7 @@ export class ILinkClient {
     const cached = this.typingTickets.get(userId);
     if (cached && cached.expiry > Date.now()) return cached.ticket;
 
-    let contextToken = this.contextTokens.get(userId);
-    if (!contextToken) {
-      this.loadContextTokens();
-      contextToken = this.contextTokens.get(userId);
-    }
+    const contextToken = this.contextTokenFor(userId);
     if (!contextToken) return null;
 
     try {
@@ -709,7 +721,7 @@ export class ILinkClient {
       if (msg.message_type !== 1) continue;
       if (msg.message_state !== 2) continue;
 
-      this.contextTokens.set(msg.from_user_id, msg.context_token);
+      this.trackContextToken(msg.from_user_id, msg.context_token);
 
       const text = extractText(msg);
       if (!text) continue;

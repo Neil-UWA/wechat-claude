@@ -23,9 +23,11 @@ import {
   stopDaemon,
 } from "./daemon-control.js";
 import { type McpRegistration, classifyMcpRegistration } from "./utils.js";
+import { installRenameHook } from "./claude-settings.js";
 import * as launchd from "./launchd.js";
 
 const SERVER_JS = fileURLToPath(new URL("./server.js", import.meta.url));
+const RENAME_HOOK_JS = fileURLToPath(new URL("./rename-hook.js", import.meta.url));
 
 function out(s: string): void {
   process.stdout.write(s + "\n");
@@ -98,6 +100,27 @@ function installSlashCommand(): void {
     out(`  ✓ /wechat command installed to ${dest}`);
   } catch (err) {
     out(`  ! could not install /wechat command: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// Lets `/wechat <name>` rename the Claude Code session too (see rename-hook.ts).
+function installSessionRenameHook(): void {
+  // JSON.stringify quotes the path for the shell, spaces and all.
+  const command = `node ${JSON.stringify(RENAME_HOOK_JS)}`;
+  switch (installRenameHook(command)) {
+    case "installed":
+      out("  ✓ /wechat <name> now also renames the Claude Code session (hook added to ~/.claude/settings.json)");
+      break;
+    case "updated":
+      out("  ✓ session-rename hook repointed at this install");
+      break;
+    case "already":
+      out("  ✓ session-rename hook already installed");
+      break;
+    case "failed":
+      out("  ! could not update ~/.claude/settings.json — /wechat <name> will not rename the Claude Code session");
+      out(`    Add a UserPromptSubmit hook running: ${command}`);
+      break;
   }
 }
 
@@ -271,6 +294,7 @@ async function main(): Promise<void> {
       out("Setting up wechat-claude…\n");
       registerMcpServer();
       installSlashCommand();
+      installSessionRenameHook();
       out("");
       const ok = await login();
       out("");
