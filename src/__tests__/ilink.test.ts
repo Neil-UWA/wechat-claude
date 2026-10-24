@@ -12,7 +12,7 @@ vi.mock("node:os", async () => {
   return { ...actual, default: { ...actual.default, homedir: () => testHome }, homedir: () => testHome };
 });
 
-const { ILinkClient, sentMessageId } = await import("../ilink.js");
+const { CONTEXT_TOKEN_REJECTED, ILinkClient, sentMessageId } = await import("../ilink.js");
 
 const WECHAT_DIR = path.join(testHome, ".claude", "wechat");
 const SESSION_FILE = path.join(WECHAT_DIR, "session.json");
@@ -178,6 +178,99 @@ describe("ILinkClient", () => {
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(body.msg.context_token).toBe("ctx-from-file");
     });
+
+    it("re-reads the file for every send, so a session never replies on a stale token", async () => {
+      // A long-lived MCP server: it read the token once, and the daemon has
+      // saved newer ones since. Replying on the old one is ret -2.
+      fs.writeFileSync(CONTEXT_TOKENS_FILE, JSON.stringify({ [TEST_USER_ID]: "ctx-old" }));
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      const mockFetch = vi.fn().mockResolvedValue(mockFetchResponse({}));
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.sendText(TEST_USER_ID, "first");
+      fs.writeFileSync(CONTEXT_TOKENS_FILE, JSON.stringify({ [TEST_USER_ID]: "ctx-new" }));
+      await client.sendText(TEST_USER_ID, "second");
+
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).msg.context_token).toBe("ctx-old");
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body).msg.context_token).toBe("ctx-new");
+    });
+
+    it("keeps a token it received itself even when the file holds an older one", async () => {
+      // The daemon: its own token is never behind the file, and a failed save
+      // must not send it back to the old one.
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-mine");
+      fs.writeFileSync(CONTEXT_TOKENS_FILE, JSON.stringify({ [TEST_USER_ID]: "ctx-older" }));
+      const mockFetch = vi.fn().mockResolvedValue(mockFetchResponse({}));
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.sendText(TEST_USER_ID, "hello");
+
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).msg.context_token).toBe("ctx-mine");
+    });
+
+    it("a new login drops every token of the old one", () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-old-login");
+
+      client.setSession({ ...TEST_SESSION, botToken: "new-login" });
+
+      expect(fs.existsSync(CONTEXT_TOKENS_FILE)).toBe(false);
+    });
+
+    it("re-logging in with the same credential keeps the tokens", () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+
+      client.setSession(TEST_SESSION);
+
+      expect(JSON.parse(fs.readFileSync(CONTEXT_TOKENS_FILE, "utf-8"))[TEST_USER_ID]).toBe("ctx-1");
+    });
+
+    it("a session that missed a login elsewhere fails out loud instead of replying on a dead token", async () => {
+      // This MCP server holds the old login and the token it used under it.
+      fs.writeFileSync(CONTEXT_TOKENS_FILE, JSON.stringify({ [TEST_USER_ID]: "ctx-old-login" }));
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      const mockFetch = vi.fn().mockResolvedValue(mockFetchResponse({}));
+      vi.stubGlobal("fetch", mockFetch);
+      await client.sendText(TEST_USER_ID, "before");
+
+      // Another process logs in: new credential on disk, tokens cleared.
+      const other = new ILinkClient();
+      other.setSession({ ...TEST_SESSION, botToken: "new-login" });
+
+      await expect(client.sendText(TEST_USER_ID, "after")).rejects.toThrow("No context_token");
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      // Once the user writes again, the reply goes out on the new login.
+      fs.writeFileSync(CONTEXT_TOKENS_FILE, JSON.stringify({ [TEST_USER_ID]: "ctx-new-login" }));
+      await client.sendText(TEST_USER_ID, "after");
+      const [, opts] = mockFetch.mock.calls[1];
+      expect(opts.headers.Authorization).toBe("Bearer new-login");
+      expect(JSON.parse(opts.body).msg.context_token).toBe("ctx-new-login");
+    });
+
+    it("trackContextToken writes only its own user, keeping others on disk", () => {
+      const client = new ILinkClient();
+      client.trackContextToken("a@im.wechat", "tok-a-old");
+      // Another process (the daemon) updates both users afterwards.
+      fs.writeFileSync(
+        CONTEXT_TOKENS_FILE,
+        JSON.stringify({ "a@im.wechat": "tok-a-new", "b@im.wechat": "tok-b" })
+      );
+      client.trackContextToken("c@im.wechat", "tok-c");
+
+      expect(JSON.parse(fs.readFileSync(CONTEXT_TOKENS_FILE, "utf-8"))).toEqual({
+        "a@im.wechat": "tok-a-new",
+        "b@im.wechat": "tok-b",
+        "c@im.wechat": "tok-c",
+      });
+    });
   });
 
   describe("processMessages", () => {
@@ -299,14 +392,15 @@ describe("ILinkClient", () => {
       client.trackContextToken(TEST_USER_ID, "ctx-1");
 
       // A concurrent login replaces the file while the send is in flight.
-      fs.writeFileSync(
-        SESSION_FILE,
-        JSON.stringify({ ...TEST_SESSION, botToken: "fresh-token" })
-      );
-
       vi.stubGlobal(
         "fetch",
-        vi.fn().mockResolvedValue(mockFetchResponse({ errcode: -14 }))
+        vi.fn().mockImplementation(() => {
+          fs.writeFileSync(
+            SESSION_FILE,
+            JSON.stringify({ ...TEST_SESSION, botToken: "fresh-token" })
+          );
+          return Promise.resolve(mockFetchResponse({ errcode: -14 }));
+        })
       );
       // Reported as a replacement, not an expiry: callers must not flag a
       // credential that is perfectly good, and the daemon must keep polling.
@@ -320,6 +414,20 @@ describe("ILinkClient", () => {
       expect(saved.botToken).toBe("fresh-token");
       // And the newer credential is adopted, so a retry uses it.
       expect(client.isLoggedIn).toBe(true);
+    });
+
+    it("an expiry drops the tokens, so the next login cannot reply on them", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-dead-login");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ errcode: -14 })));
+      await expect(client.sendText(TEST_USER_ID, "hi")).rejects.toThrow("Session expired");
+
+      // session.json is gone now, so the re-login has nothing to compare
+      // against; the tokens must already be gone too.
+      expect(fs.existsSync(CONTEXT_TOKENS_FILE)).toBe(false);
+      client.setSession({ ...TEST_SESSION, botToken: "after-rescan" });
+      await expect(client.sendText(TEST_USER_ID, "hi")).rejects.toThrow("No context_token");
     });
 
     it("removes the credential that actually expired", async () => {
@@ -496,6 +604,17 @@ describe("ILinkClient", () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({}, 500)));
 
       await expect(client.sendText(TEST_USER_ID, "hello")).rejects.toThrow("sendmessage failed: 500");
+    });
+
+    it("names a ret -2 as a rejected context_token, not a dead login", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-1");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ ret: -2 })));
+
+      await expect(client.sendText(TEST_USER_ID, "hello")).rejects.toThrow(CONTEXT_TOKEN_REJECTED);
+      // The login itself is fine and must survive.
+      expect(client.isLoggedIn).toBe(true);
     });
 
     // A revoked token answers HTTP 200 with the error in the body. Reading

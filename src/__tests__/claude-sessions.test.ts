@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   claudeNameForMcpPid,
+  claudePidForSessionId,
   claudeRecordsForSessions,
   ownClaudeSessionName,
   parentPids,
@@ -121,5 +122,23 @@ describe("ownClaudeSessionName", () => {
 
   it("returns undefined when Claude Code left no record", () => {
     expect(ownClaudeSessionName(203, dir)).toBeUndefined();
+  });
+});
+
+describe("claudePidForSessionId", () => {
+  it("skips a dead process's leftover record for the same session", () => {
+    // A crashed Claude leaves its record; `claude --resume` writes a second.
+    const d = mkdtempSync(path.join(tmpdir(), "wc-claude-pid-test-"));
+    const dead = spawnSync("true").pid!;
+    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    writeFileSync(path.join(d, `${dead}.json`), JSON.stringify({ pid: dead, name: "x", sessionId }));
+    writeFileSync(
+      path.join(d, `${process.pid}.json`),
+      JSON.stringify({ pid: process.pid, name: "x", sessionId })
+    );
+
+    expect(claudePidForSessionId(sessionId, d)).toBe(process.pid);
+    expect(claudePidForSessionId("no-such-session", d)).toBeUndefined();
+    rmSync(d, { recursive: true, force: true });
   });
 });

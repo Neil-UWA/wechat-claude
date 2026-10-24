@@ -23,9 +23,11 @@ import {
   stopDaemon,
 } from "./daemon-control.js";
 import { type McpRegistration, classifyMcpRegistration } from "./utils.js";
+import { installRenameHook, removeRenameHook, renameHookCommand } from "./claude-settings.js";
 import * as launchd from "./launchd.js";
 
 const SERVER_JS = fileURLToPath(new URL("./server.js", import.meta.url));
+const RENAME_HOOK_JS = fileURLToPath(new URL("./rename-hook.js", import.meta.url));
 
 function out(s: string): void {
   process.stdout.write(s + "\n");
@@ -98,6 +100,40 @@ function installSlashCommand(): void {
     out(`  ✓ /wechat command installed to ${dest}`);
   } catch (err) {
     out(`  ! could not install /wechat command: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// Lets `/wechat <name>` rename the Claude Code session too (see rename-hook.ts).
+function installSessionRenameHook(): void {
+  const command = renameHookCommand(RENAME_HOOK_JS);
+  switch (installRenameHook(command)) {
+    case "installed":
+      out("  ✓ /wechat <name> now also renames the Claude Code session (hook added to ~/.claude/settings.json)");
+      break;
+    case "updated":
+      out("  ✓ session-rename hook repointed at this install");
+      break;
+    case "already":
+      out("  ✓ session-rename hook already installed");
+      break;
+    case "failed":
+      out("  ! could not update ~/.claude/settings.json — /wechat <name> will not rename the Claude Code session");
+      out(`    Add a UserPromptSubmit hook running: ${command}`);
+      break;
+  }
+}
+
+function removeSessionRenameHook(): number {
+  switch (removeRenameHook()) {
+    case "removed":
+      out("  ✓ session-rename hook removed from ~/.claude/settings.json");
+      return 0;
+    case "absent":
+      out("  • no session-rename hook was installed");
+      return 0;
+    case "failed":
+      out("  ! could not update ~/.claude/settings.json — remove the UserPromptSubmit hook running rename-hook.js by hand");
+      return 1;
   }
 }
 
@@ -260,7 +296,8 @@ function usage(): void {
   out("  wechat-claude daemon install     install it as a launchd service (macOS)");
   out("  wechat-claude daemon uninstall   remove the launchd service");
   out("  wechat-claude daemon status      check daemon / service state");
-  out("  wechat-claude daemon log         tail the daemon log\n");
+  out("  wechat-claude daemon log         tail the daemon log");
+  out("  wechat-claude remove-hook        remove the /wechat session-rename hook (before uninstalling)\n");
   out("After setup: start the daemon, then type /wechat in a Claude Code session.");
 }
 
@@ -271,6 +308,7 @@ async function main(): Promise<void> {
       out("Setting up wechat-claude…\n");
       registerMcpServer();
       installSlashCommand();
+      installSessionRenameHook();
       out("");
       const ok = await login();
       out("");
@@ -297,6 +335,9 @@ async function main(): Promise<void> {
       break;
     case "status":
       status();
+      break;
+    case "remove-hook":
+      process.exitCode = removeSessionRenameHook();
       break;
     case "daemon":
       process.exitCode = await daemon(process.argv[3]);

@@ -30,6 +30,12 @@ export const SESSION_EXPIRED = "Session expired, please login again";
 // it as expired; the fresh credential has been adopted, so retry.
 export const SESSION_REPLACED =
   "Session was replaced by a newer login — retry with the new credential";
+// sendmessage answered ret -2: WeChat would not accept this reply on the
+// conversation's context_token. A token only covers a limited window after the
+// user's last message (about 24 h, and a handful of replies), so after a long
+// silence there is nothing to send with until the user writes again.
+export const CONTEXT_TOKEN_REJECTED =
+  "WeChat rejected the reply's context_token (ret -2)";
 export const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
 const BASE_INFO = { channel_version: "1.0.0" } as const;
 const TEXT_LIMIT = 2000;
@@ -37,6 +43,34 @@ const WECHAT_DIR = path.join(os.homedir(), ".claude", "wechat");
 const SESSION_FILE = path.join(WECHAT_DIR, "session.json");
 const OLD_SESSION_FILE = path.join(os.homedir(), ".claude", "wechat-session.json");
 const CONTEXT_TOKENS_FILE = path.join(WECHAT_DIR, "context_tokens.json");
+
+function deleteContextTokensFile(): void {
+  try {
+    fs.unlinkSync(CONTEXT_TOKENS_FILE);
+  } catch {}
+}
+
+// The bot token currently on disk, if any — what a new login replaces.
+function readSessionFileToken(): string | undefined {
+  try {
+    const t = (JSON.parse(fs.readFileSync(SESSION_FILE, "utf-8")) as Partial<Session>).botToken;
+    return typeof t === "string" ? t : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readContextTokensFile(): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(CONTEXT_TOKENS_FILE, "utf-8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed)) if (typeof v === "string") out[k] = v;
+    return out;
+  } catch {
+    return {};
+  }
+}
 
 function generateUin(): string {
   const n = crypto.randomBytes(4).readUInt32BE();
@@ -91,6 +125,7 @@ export class ILinkClient {
   // while the write silently failed on permissions or a full disk.
   setSession(session: Session): void {
     const previous = this.session;
+    const replacing = previous?.botToken ?? readSessionFileToken();
     this.session = session;
     try {
       this.saveSession();
@@ -105,6 +140,30 @@ export class ILinkClient {
     // A token that has just come back from a confirmed QR scan is as verified
     // as it gets.
     markLoginVerified();
+    // Every context_token belongs to the login it arrived under. After a new
+    // one, sendmessage still answers ret 0 on an old token — and the message
+    // never reaches the user. Without a token the send fails out loud instead
+    // ("they must send a message first"), which is the truth.
+    if (replacing !== undefined && replacing !== session.botToken) {
+      this.forgetContextTokens();
+      deleteContextTokensFile();
+    }
+  }
+
+  // Pick up a login made by another process since this one last looked. An
+  // MCP server outlives logins, and the old credential is not always refused
+  // outright — a send on it can come back ret 0 and never arrive. Called before
+  // every send; a file read is cheap next to a lost reply.
+  private adoptNewerLogin(): void {
+    const onDisk = readSessionFileToken();
+    if (onDisk !== undefined && onDisk !== this.session?.botToken)
+      this.tryRestoreSession(true);
+  }
+
+  private forgetContextTokens(): void {
+    this.contextTokens.clear();
+    this.trackedHere.clear();
+    this.typingTickets.clear();
   }
 
   private saveSession(): void {
@@ -123,6 +182,10 @@ export class ILinkClient {
         }
         const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Session;
         if (data.botToken && data.ilinkBotId && data.ilinkUserId) {
+          // Adopting a newer login (another process scanned a QR code): the
+          // tokens this process holds belong to the old one.
+          if (this.session && this.session.botToken !== data.botToken)
+            this.forgetContextTokens();
           this.session = data;
           process.stderr.write(`[wechat-claude] Session restored from ${file}\n`);
           if (file === OLD_SESSION_FILE) {
@@ -186,10 +249,15 @@ export class ILinkClient {
   private handleExpiredSession(): typeof SESSION_EXPIRED | typeof SESSION_REPLACED {
     const failed = this.session?.botToken;
     this.session = null;
+    // The tokens belonged to the dead credential either way. This has to
+    // happen here: once session.json is gone, the next login cannot tell it
+    // is replacing anything, and would leave them for replies to vanish on.
+    this.forgetContextTokens();
     // Only forget the verification stamp if this really was the live
     // credential; a concurrent login owns both the file and the stamp.
     if (this.clearSessionFile(failed)) {
       clearLoginVerified();
+      deleteContextTokensFile();
       return SESSION_EXPIRED;
     }
     // A newer token is on disk — adopt it rather than declaring an expiry.
@@ -199,6 +267,8 @@ export class ILinkClient {
   private updatesCursor = "";
   private pendingMessages: PendingMessage[] = [];
   private contextTokens = new Map<string, string>();
+  // Users whose token this process received from WeChat itself.
+  private trackedHere = new Set<string>();
   private typingTickets = new Map<string, { ticket: string; expiry: number }>();
   private polling = false;
   private pollAbort: AbortController | null = null;
@@ -242,32 +312,39 @@ export class ILinkClient {
     this.updatesCursor = cursor;
   }
 
+  // Writes only this user's entry, merged into what is on disk: every MCP
+  // server shares the file with the daemon, and writing back a whole in-memory
+  // map would put stale tokens over the fresh ones the daemon just saved.
   trackContextToken(userId: string, token: string): void {
     this.contextTokens.set(userId, token);
-    this.saveContextTokens();
-  }
-
-  private saveContextTokens(): void {
+    this.trackedHere.add(userId);
+    const data = readContextTokensFile();
+    if (data[userId] === token) return;
+    data[userId] = token;
+    const tmp = `${CONTEXT_TOKENS_FILE}.${process.pid}.tmp`;
     try {
-      const data: Record<string, string> = {};
-      for (const [k, v] of this.contextTokens) data[k] = v;
-      fs.writeFileSync(CONTEXT_TOKENS_FILE, JSON.stringify(data));
-    } catch {}
-  }
-
-  private loadContextTokens(): void {
-    try {
-      if (!fs.existsSync(CONTEXT_TOKENS_FILE)) {
-        process.stderr.write(`[wechat-claude] context_tokens.json not found at ${CONTEXT_TOKENS_FILE}\n`);
-        return;
-      }
-      const data = JSON.parse(fs.readFileSync(CONTEXT_TOKENS_FILE, "utf-8")) as Record<string, string>;
-      for (const [k, v] of Object.entries(data)) {
-        if (!this.contextTokens.has(k)) this.contextTokens.set(k, v);
-      }
-    } catch (err) {
-      process.stderr.write(`[wechat-claude] loadContextTokens failed: ${err}\n`);
+      fs.mkdirSync(WECHAT_DIR, { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify(data));
+      fs.renameSync(tmp, CONTEXT_TOKENS_FILE);
+    } catch {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {}
     }
+  }
+
+  // The token to reply with. A process that receives messages itself (the
+  // daemon) is never behind the file, so its own token stands — even if saving
+  // it failed. Everyone else takes the file's: the daemon saves every
+  // message's token there, while an MCP server only sees the messages routed
+  // to it. A long-lived session that kept the token it first read replied on a
+  // context WeChat had long since closed (ret -2), even after the user had
+  // written again.
+  private contextTokenFor(userId: string): string | undefined {
+    if (this.trackedHere.has(userId)) return this.contextTokens.get(userId);
+    // No fallback to memory: a token missing from the file was cleared there
+    // on purpose (a new login), and the copy in memory is the dead one.
+    return readContextTokensFile()[userId];
   }
 
   get baseUrl(): string {
@@ -400,13 +477,10 @@ export class ILinkClient {
     text: string,
     onChunk?: (chunk: SentChunk) => void
   ): Promise<SentChunk[]> {
+    this.adoptNewerLogin();
     if (!this.session) throw new Error("Not logged in");
 
-    let contextToken = this.contextTokens.get(toUserId);
-    if (!contextToken) {
-      this.loadContextTokens();
-      contextToken = this.contextTokens.get(toUserId);
-    }
+    const contextToken = this.contextTokenFor(toUserId);
     if (!contextToken) {
       throw new Error(
         `No context_token for user ${toUserId}. They must send a message first.`
@@ -465,6 +539,9 @@ export class ILinkClient {
   private checkSendResponse(codes: number[], what = "sendmessage"): void {
     if (codes.includes(-14)) {
       throw new Error(this.handleExpiredSession());
+    }
+    if (what.startsWith("sendmessage") && codes.includes(-2)) {
+      throw new Error(`${what}: ${CONTEXT_TOKEN_REJECTED}`);
     }
     const errCode = codes.find((c) => c !== 0);
     if (errCode !== undefined) {
@@ -550,13 +627,10 @@ export class ILinkClient {
     filePath: string,
     caption?: string
   ): Promise<string[]> {
+    this.adoptNewerLogin();
     if (!this.session) throw new Error("Not logged in");
 
-    let contextToken = this.contextTokens.get(toUserId);
-    if (!contextToken) {
-      this.loadContextTokens();
-      contextToken = this.contextTokens.get(toUserId);
-    }
+    const contextToken = this.contextTokenFor(toUserId);
     if (!contextToken) {
       throw new Error(
         `No context_token for user ${toUserId}. They must send a message first.`
@@ -670,11 +744,7 @@ export class ILinkClient {
     const cached = this.typingTickets.get(userId);
     if (cached && cached.expiry > Date.now()) return cached.ticket;
 
-    let contextToken = this.contextTokens.get(userId);
-    if (!contextToken) {
-      this.loadContextTokens();
-      contextToken = this.contextTokens.get(userId);
-    }
+    const contextToken = this.contextTokenFor(userId);
     if (!contextToken) return null;
 
     try {
@@ -709,7 +779,7 @@ export class ILinkClient {
       if (msg.message_type !== 1) continue;
       if (msg.message_state !== 2) continue;
 
-      this.contextTokens.set(msg.from_user_id, msg.context_token);
+      this.trackContextToken(msg.from_user_id, msg.context_token);
 
       const text = extractText(msg);
       if (!text) continue;
@@ -792,8 +862,8 @@ export class ILinkClient {
     this.session = null;
     this.updatesCursor = "";
     this.pendingMessages = [];
-    this.contextTokens.clear();
-    this.typingTickets.clear();
+    this.forgetContextTokens();
+    deleteContextTokensFile();
     this.clearSessionFile();
     clearLoginVerified();
   }

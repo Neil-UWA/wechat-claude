@@ -247,6 +247,7 @@ wechat-claude daemon install     # Install as a launchd service (macOS)
 wechat-claude daemon uninstall   # Remove the launchd service
 wechat-claude daemon status      # Check daemon / service state
 wechat-claude daemon log         # Tail the daemon log
+wechat-claude remove-hook        # remove the /wechat rename hook (run before uninstalling)
 ```
 
 In a git checkout the same commands are available as npm scripts
@@ -421,6 +422,7 @@ wechat-claude executes code on your machine in response to chat messages. Read
 ## Uninstall
 
 ```bash
+wechat-claude remove-hook       # remove the /wechat rename hook from ~/.claude/settings.json
 wechat-claude daemon uninstall  # remove the launchd service (macOS)
 claude mcp remove wechat        # unregister the MCP server
 rm ~/.claude/commands/wechat.md # remove the slash command
