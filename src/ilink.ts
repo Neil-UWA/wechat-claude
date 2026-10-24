@@ -44,6 +44,22 @@ const SESSION_FILE = path.join(WECHAT_DIR, "session.json");
 const OLD_SESSION_FILE = path.join(os.homedir(), ".claude", "wechat-session.json");
 const CONTEXT_TOKENS_FILE = path.join(WECHAT_DIR, "context_tokens.json");
 
+function deleteContextTokensFile(): void {
+  try {
+    fs.unlinkSync(CONTEXT_TOKENS_FILE);
+  } catch {}
+}
+
+// The bot token currently on disk, if any — what a new login replaces.
+function readSessionFileToken(): string | undefined {
+  try {
+    const t = (JSON.parse(fs.readFileSync(SESSION_FILE, "utf-8")) as Partial<Session>).botToken;
+    return typeof t === "string" ? t : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function readContextTokensFile(): Record<string, string> {
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(CONTEXT_TOKENS_FILE, "utf-8"));
@@ -109,6 +125,7 @@ export class ILinkClient {
   // while the write silently failed on permissions or a full disk.
   setSession(session: Session): void {
     const previous = this.session;
+    const replacing = previous?.botToken ?? readSessionFileToken();
     this.session = session;
     try {
       this.saveSession();
@@ -123,6 +140,30 @@ export class ILinkClient {
     // A token that has just come back from a confirmed QR scan is as verified
     // as it gets.
     markLoginVerified();
+    // Every context_token belongs to the login it arrived under. After a new
+    // one, sendmessage still answers ret 0 on an old token — and the message
+    // never reaches the user. Without a token the send fails out loud instead
+    // ("they must send a message first"), which is the truth.
+    if (replacing !== undefined && replacing !== session.botToken) {
+      this.forgetContextTokens();
+      deleteContextTokensFile();
+    }
+  }
+
+  // Pick up a login made by another process since this one last looked. An
+  // MCP server outlives logins, and the old credential is not always refused
+  // outright — a send on it can come back ret 0 and never arrive. Called before
+  // every send; a file read is cheap next to a lost reply.
+  private adoptNewerLogin(): void {
+    const onDisk = readSessionFileToken();
+    if (onDisk !== undefined && onDisk !== this.session?.botToken)
+      this.tryRestoreSession(true);
+  }
+
+  private forgetContextTokens(): void {
+    this.contextTokens.clear();
+    this.trackedHere.clear();
+    this.typingTickets.clear();
   }
 
   private saveSession(): void {
@@ -141,6 +182,10 @@ export class ILinkClient {
         }
         const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Session;
         if (data.botToken && data.ilinkBotId && data.ilinkUserId) {
+          // Adopting a newer login (another process scanned a QR code): the
+          // tokens this process holds belong to the old one.
+          if (this.session && this.session.botToken !== data.botToken)
+            this.forgetContextTokens();
           this.session = data;
           process.stderr.write(`[wechat-claude] Session restored from ${file}\n`);
           if (file === OLD_SESSION_FILE) {
@@ -292,9 +337,9 @@ export class ILinkClient {
   // written again.
   private contextTokenFor(userId: string): string | undefined {
     if (this.trackedHere.has(userId)) return this.contextTokens.get(userId);
-    const onDisk = readContextTokensFile()[userId];
-    if (onDisk) this.contextTokens.set(userId, onDisk);
-    return this.contextTokens.get(userId);
+    // No fallback to memory: a token missing from the file was cleared there
+    // on purpose (a new login), and the copy in memory is the dead one.
+    return readContextTokensFile()[userId];
   }
 
   get baseUrl(): string {
@@ -427,6 +472,7 @@ export class ILinkClient {
     text: string,
     onChunk?: (chunk: SentChunk) => void
   ): Promise<SentChunk[]> {
+    this.adoptNewerLogin();
     if (!this.session) throw new Error("Not logged in");
 
     const contextToken = this.contextTokenFor(toUserId);
@@ -576,6 +622,7 @@ export class ILinkClient {
     filePath: string,
     caption?: string
   ): Promise<string[]> {
+    this.adoptNewerLogin();
     if (!this.session) throw new Error("Not logged in");
 
     const contextToken = this.contextTokenFor(toUserId);
@@ -810,9 +857,8 @@ export class ILinkClient {
     this.session = null;
     this.updatesCursor = "";
     this.pendingMessages = [];
-    this.contextTokens.clear();
-    this.trackedHere.clear();
-    this.typingTickets.clear();
+    this.forgetContextTokens();
+    deleteContextTokensFile();
     this.clearSessionFile();
     clearLoginVerified();
   }
