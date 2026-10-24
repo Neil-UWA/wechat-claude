@@ -48,24 +48,29 @@ function load(
   return { settings, groups };
 }
 
-// Whether our entry is in the file as it now stands on disk. Claude Code
-// writes this file too, and may have replaced it between our read and our
-// rename; a write is only trusted once read back.
-function hasOurEntry(file: string, command?: string): boolean {
+// Our entries among the UserPromptSubmit groups, whatever their shape.
+function ourHooks(groups: unknown[]): HookCommand[] {
+  const out: HookCommand[] = [];
+  for (const g of groups as HookGroup[]) {
+    if (!Array.isArray(g?.hooks)) continue;
+    for (const h of g.hooks as unknown[]) if (isOurs(h)) out.push(h as HookCommand);
+  }
+  return out;
+}
+
+// Our entries in the file as it now stands on disk, or null when it can't be
+// read — which must not pass for "none there". Claude Code writes this file
+// too and may have replaced it between our read and our rename, so a write is
+// only trusted once read back.
+function ourHooksOnDisk(file: string): HookCommand[] | null {
   const loaded = load(file);
-  if (!loaded) return false;
-  return (loaded.groups as HookGroup[]).some(
-    (g) =>
-      Array.isArray(g?.hooks) &&
-      (g.hooks as unknown[]).some(
-        (h) => isOurs(h) && (command === undefined || (h as HookCommand).command === command)
-      )
-  );
+  return loaded ? ourHooks(loaded.groups) : null;
 }
 
 // "already": an identical entry was there. "installed"/"updated": this call
 // added it or replaced one pointing at another install. "failed": the file is
-// corrupt or unwritable, and was left untouched.
+// corrupt or unwritable and was left untouched — or it was written, but
+// another writer replaced it before the entry could be confirmed there.
 export type HookInstallResult = "already" | "installed" | "updated" | "failed";
 
 export function installRenameHook(
@@ -76,24 +81,16 @@ export function installRenameHook(
   if (!loaded) return "failed";
   const { settings, groups } = loaded;
 
-  let found = false;
-  let replaced = false;
-  for (const g of groups as HookGroup[]) {
-    if (!Array.isArray(g?.hooks)) continue;
-    for (const h of g.hooks as unknown[]) {
-      if (!isOurs(h)) continue;
-      found = true;
-      if ((h as HookCommand).command !== command) {
-        (h as HookCommand).command = command;
-        replaced = true;
-      }
-    }
-  }
-  if (found && !replaced) return "already";
+  const ours = ourHooks(groups);
+  const found = ours.length > 0;
+  if (found && ours.every((h) => h.command === command)) return "already";
+  for (const h of ours) h.command = command;
   if (!found) groups.push({ hooks: [{ type: "command", command }] });
   (settings.hooks as Record<string, unknown>).UserPromptSubmit = groups;
 
-  if (!writeJsonAtomic(file, settings) || !hasOurEntry(file, command)) return "failed";
+  if (!writeJsonAtomic(file, settings)) return "failed";
+  const after = ourHooksOnDisk(file);
+  if (!after?.some((h) => h.command === command)) return "failed";
   return found ? "updated" : "installed";
 }
 
@@ -122,5 +119,6 @@ export function removeRenameHook(file = CLAUDE_SETTINGS_FILE): HookRemoveResult 
   const hooks = settings.hooks as Record<string, unknown>;
   if (kept.length > 0) hooks.UserPromptSubmit = kept;
   else delete hooks.UserPromptSubmit;
-  return writeJsonAtomic(file, settings) && !hasOurEntry(file) ? "removed" : "failed";
+  if (!writeJsonAtomic(file, settings)) return "failed";
+  return ourHooksOnDisk(file)?.length === 0 ? "removed" : "failed";
 }

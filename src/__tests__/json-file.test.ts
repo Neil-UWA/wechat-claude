@@ -45,7 +45,36 @@ describe("writeJsonAtomic", () => {
     expect(readJsonObject(real)).toEqual({ a: 1 });
   });
 
-  it("fails without touching the file or leaving a temp file behind", () => {
+  it("follows a symlink whose target does not exist yet", () => {
+    const real = path.join(dir, "not-yet", "settings.json");
+    const link = path.join(dir, "dangling.json");
+    fs.symlinkSync(real, link);
+    expect(writeJsonAtomic(link, { a: 1 })).toBe(true);
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readJsonObject(real)).toEqual({ a: 1 });
+  });
+
+  it("keeps a group-writable mode the umask would narrow", () => {
+    const f = path.join(dir, "shared.json");
+    fs.writeFileSync(f, "{}");
+    fs.chmodSync(f, 0o664);
+    writeJsonAtomic(f, { a: 1 });
+    expect(fs.statSync(f).mode & 0o777).toBe(0o664);
+  });
+
+  it("is not fooled by a leftover temp file's mode", () => {
+    const f = path.join(dir, "secret.json");
+    fs.writeFileSync(f, "{}");
+    fs.chmodSync(f, 0o600);
+    const stale = `${f}.wechat-claude.${process.pid}.tmp`;
+    fs.writeFileSync(stale, "junk");
+    fs.chmodSync(stale, 0o644);
+    writeJsonAtomic(f, { a: 1 });
+    expect(fs.statSync(f).mode & 0o777).toBe(0o600);
+  });
+
+  // root ignores directory permissions, so the failure can't be staged.
+  it.skipIf(process.getuid?.() === 0)("fails without touching the file or leaving a temp file behind", () => {
     const ro = path.join(dir, "ro");
     fs.mkdirSync(ro);
     const f = path.join(ro, "c.json");
