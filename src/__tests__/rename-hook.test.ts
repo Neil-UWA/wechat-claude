@@ -25,6 +25,7 @@ function holdName(name: string, claudePid: number): void {
   );
 }
 
+// Must be a live pid: records of dead Claude processes are skipped.
 function registerOwnClaude(pid: number): void {
   fs.writeFileSync(
     path.join(CLAUDE_SESSIONS, `${pid}.json`),
@@ -64,14 +65,14 @@ describe("sessionTitleFor", () => {
   });
 
   it("skips a name another live session holds", async () => {
-    registerOwnClaude(70001);
+    registerOwnClaude(process.pid);
     holdName("Integration", 70002);
     expect(await sessionTitleFor("/wechat integration", CLAUDE_SESSION_ID)).toBeUndefined();
   });
 
   it("renames when the holder is this very session", async () => {
-    registerOwnClaude(70001);
-    holdName("integration", 70001);
+    registerOwnClaude(process.pid);
+    holdName("integration", process.pid);
     expect(await sessionTitleFor("/wechat integration", CLAUDE_SESSION_ID)).toBe("integration");
   });
 

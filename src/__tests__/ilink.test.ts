@@ -416,6 +416,20 @@ describe("ILinkClient", () => {
       expect(client.isLoggedIn).toBe(true);
     });
 
+    it("an expiry drops the tokens, so the next login cannot reply on them", async () => {
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-dead-login");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ errcode: -14 })));
+      await expect(client.sendText(TEST_USER_ID, "hi")).rejects.toThrow("Session expired");
+
+      // session.json is gone now, so the re-login has nothing to compare
+      // against; the tokens must already be gone too.
+      expect(fs.existsSync(CONTEXT_TOKENS_FILE)).toBe(false);
+      client.setSession({ ...TEST_SESSION, botToken: "after-rescan" });
+      await expect(client.sendText(TEST_USER_ID, "hi")).rejects.toThrow("No context_token");
+    });
+
     it("removes the credential that actually expired", async () => {
       const client = new ILinkClient();
       client.setSession(TEST_SESSION);

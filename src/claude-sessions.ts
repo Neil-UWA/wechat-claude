@@ -17,6 +17,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isProcessAlive } from "./paths.js";
 
 export const CLAUDE_SESSIONS_DIR = path.join(os.homedir(), ".claude", "sessions");
 
@@ -135,7 +136,9 @@ export function claudeNameForMcpPid(
 
 // The pid of the live Claude Code process running session `sessionId`, found
 // by its own registry record. For callers that know only the session id — a
-// hook, whose parent may be a shell rather than Claude itself.
+// hook, whose parent may be a shell rather than Claude itself. A crashed
+// Claude leaves its record behind, and `claude --resume` then writes a second
+// one with the same session id, so dead pids are skipped.
 export function claudePidForSessionId(
   sessionId: string,
   sessionsDir: string = CLAUDE_SESSIONS_DIR
@@ -150,7 +153,7 @@ export function claudePidForSessionId(
     const m = f.match(/^(\d+)\.json$/);
     if (!m) continue;
     const rec = readClaudeSession(Number(m[1]), sessionsDir);
-    if (rec?.sessionId === sessionId) return rec.pid;
+    if (rec?.sessionId === sessionId && isProcessAlive(rec.pid)) return rec.pid;
   }
   return undefined;
 }

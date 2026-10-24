@@ -180,8 +180,11 @@ type ToolResult = {
 // revoked credential with an error in the body, and until now that came back
 // as a bare "Send failed". Record the expiry so wechat_status stops claiming
 // otherwise, and say what fixes it.
+// `delivered` says what of a chunked reply already reached the user. Every
+// failure that asks for a resend carries it, or the resend repeats that part.
 function sendFailure(err: unknown, delivered?: string): ToolResult {
   const msg = err instanceof Error ? err.message : String(err);
+  const sent = delivered ? ` ${delivered}` : "";
   // A newer login landed mid-send. Flagging expiry here would mark a perfectly
   // good credential dead and send the user back to a QR code for nothing.
   if (msg.includes(SESSION_REPLACED)) {
@@ -189,7 +192,7 @@ function sendFailure(err: unknown, delivered?: string): ToolResult {
       content: [
         {
           type: "text",
-          text: "Send failed: another session logged in to WeChat while this message was in flight, so this send used a credential that is no longer current. The new login has been picked up — send again.",
+          text: `Send failed: another session logged in to WeChat while this message was in flight, so this send used a credential that is no longer current. The new login has been picked up — send again.${sent}`,
         },
       ],
       isError: true,
@@ -203,7 +206,7 @@ function sendFailure(err: unknown, delivered?: string): ToolResult {
       content: [
         {
           type: "text",
-          text: "Send failed: the WeChat login has EXPIRED — the token was revoked (e.g. `wechat-claude uninstall` on another machine) or timed out, and it has been cleared. Call wechat_login, have the user scan the QR code, then send again.",
+          text: `Send failed: the WeChat login has EXPIRED — the token was revoked (e.g. \`wechat-claude uninstall\` on another machine) or timed out, and it has been cleared. Call wechat_login, have the user scan the QR code, then send again.${sent}`,
         },
       ],
       isError: true,
@@ -223,7 +226,7 @@ function sendFailure(err: unknown, delivered?: string): ToolResult {
       isError: true,
     };
   }
-  return { content: [{ type: "text", text: `Send failed: ${msg}` }], isError: true };
+  return { content: [{ type: "text", text: `Send failed: ${msg}${sent}` }], isError: true };
 }
 
 // What a resend must leave out, after `deliveredChars` of `text` went out

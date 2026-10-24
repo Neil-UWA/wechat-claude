@@ -249,10 +249,15 @@ export class ILinkClient {
   private handleExpiredSession(): typeof SESSION_EXPIRED | typeof SESSION_REPLACED {
     const failed = this.session?.botToken;
     this.session = null;
+    // The tokens belonged to the dead credential either way. This has to
+    // happen here: once session.json is gone, the next login cannot tell it
+    // is replacing anything, and would leave them for replies to vanish on.
+    this.forgetContextTokens();
     // Only forget the verification stamp if this really was the live
     // credential; a concurrent login owns both the file and the stamp.
     if (this.clearSessionFile(failed)) {
       clearLoginVerified();
+      deleteContextTokensFile();
       return SESSION_EXPIRED;
     }
     // A newer token is on disk — adopt it rather than declaring an expiry.
