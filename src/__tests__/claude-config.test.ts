@@ -68,4 +68,14 @@ describe("claude-config", () => {
       fs.chmodSync(dir, 0o700);
     }
   });
+
+  it("writes through a symlinked ~/.claude.json instead of replacing it", () => {
+    const real = path.join(dir, "dotfiles-claude.json");
+    fs.writeFileSync(real, JSON.stringify({ theme: "dark" }));
+    fs.symlinkSync(real, CONFIG);
+    expect(ensureBypassAccepted(CONFIG)).toBe("accepted");
+    expect(fs.lstatSync(CONFIG).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(fs.readFileSync(real, "utf-8")).bypassPermissionsModeAccepted).toBe(true);
+    fs.unlinkSync(real);
+  });
 });

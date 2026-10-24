@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { readJsonObject, writeJsonAtomic } from "./json-file.js";
 
 export const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), ".claude", "settings.json");
 
@@ -37,17 +38,8 @@ export function renameHookCommand(scriptPath: string): string {
 function load(
   file: string
 ): { settings: Record<string, unknown>; groups: unknown[] } | null {
-  let settings: Record<string, unknown> = {};
-  if (fs.existsSync(file)) {
-    try {
-      const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf-8"));
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-        return null;
-      settings = parsed as Record<string, unknown>;
-    } catch {
-      return null;
-    }
-  }
+  const settings = fs.existsSync(file) ? readJsonObject(file) : {};
+  if (settings === null) return null;
   const hooks = settings.hooks ?? {};
   if (typeof hooks !== "object" || hooks === null || Array.isArray(hooks)) return null;
   const groups = (hooks as Record<string, unknown>).UserPromptSubmit ?? [];
@@ -56,29 +48,19 @@ function load(
   return { settings, groups };
 }
 
-function save(file: string, settings: Record<string, unknown>): boolean {
-  // Write through a symlink, not over it: dotfile managers (stow, chezmoi,
-  // home-manager) link settings.json into a repo, and renaming onto the link
-  // would quietly detach it.
-  let target = file;
-  try {
-    target = fs.realpathSync(file);
-  } catch {}
-  // Temp file + rename: Claude Code reads this file live, and a partial write
-  // would cost the user every other setting in it.
-  const tmp = `${target}.wechat-claude.${process.pid}.tmp`;
-  try {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    const mode = fs.existsSync(target) ? fs.statSync(target).mode & 0o777 : 0o644;
-    fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n", { mode });
-    fs.renameSync(tmp, target);
-    return true;
-  } catch {
-    try {
-      fs.unlinkSync(tmp);
-    } catch {}
-    return false;
-  }
+// Whether our entry is in the file as it now stands on disk. Claude Code
+// writes this file too, and may have replaced it between our read and our
+// rename; a write is only trusted once read back.
+function hasOurEntry(file: string, command?: string): boolean {
+  const loaded = load(file);
+  if (!loaded) return false;
+  return (loaded.groups as HookGroup[]).some(
+    (g) =>
+      Array.isArray(g?.hooks) &&
+      (g.hooks as unknown[]).some(
+        (h) => isOurs(h) && (command === undefined || (h as HookCommand).command === command)
+      )
+  );
 }
 
 // "already": an identical entry was there. "installed"/"updated": this call
@@ -111,7 +93,7 @@ export function installRenameHook(
   if (!found) groups.push({ hooks: [{ type: "command", command }] });
   (settings.hooks as Record<string, unknown>).UserPromptSubmit = groups;
 
-  if (!save(file, settings)) return "failed";
+  if (!writeJsonAtomic(file, settings) || !hasOurEntry(file, command)) return "failed";
   return found ? "updated" : "installed";
 }
 
@@ -140,5 +122,5 @@ export function removeRenameHook(file = CLAUDE_SETTINGS_FILE): HookRemoveResult 
   const hooks = settings.hooks as Record<string, unknown>;
   if (kept.length > 0) hooks.UserPromptSubmit = kept;
   else delete hooks.UserPromptSubmit;
-  return save(file, settings) ? "removed" : "failed";
+  return writeJsonAtomic(file, settings) && !hasOurEntry(file) ? "removed" : "failed";
 }
