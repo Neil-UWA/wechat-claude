@@ -216,6 +216,7 @@ wechat-claude daemon install     # 装成 launchd 服务（macOS）
 wechat-claude daemon uninstall   # 移除 launchd 服务
 wechat-claude daemon status      # 查看 daemon / 服务状态
 wechat-claude daemon log         # 跟踪 daemon 日志
+wechat-claude remove-hook        # 移除 /wechat 改名用的 hook（卸载前跑）
 ```
 
 在 git 检出里，同样的命令也有对应的 npm script（`npm run daemon:install` 等），它们只是
@@ -356,6 +357,7 @@ wechat-claude 会响应聊天消息、在你的机器上执行代码。完整威
 ## 卸载
 
 ```bash
+wechat-claude remove-hook       # 移除 /wechat 改名用的 hook（~/.claude/settings.json）
 wechat-claude daemon uninstall  # 移除 launchd 服务（macOS）
 claude mcp remove wechat        # 注销 MCP server
 rm ~/.claude/commands/wechat.md # 删除斜杠命令

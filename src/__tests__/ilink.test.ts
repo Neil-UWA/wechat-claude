@@ -179,20 +179,36 @@ describe("ILinkClient", () => {
       expect(body.msg.context_token).toBe("ctx-from-file");
     });
 
-    it("prefers the file's token over a stale one held in memory", async () => {
-      // A long-lived MCP server: it saw the user's first message, and the
-      // daemon has saved newer tokens since. Replying on the old one is ret -2.
+    it("re-reads the file for every send, so a session never replies on a stale token", async () => {
+      // A long-lived MCP server: it read the token once, and the daemon has
+      // saved newer ones since. Replying on the old one is ret -2.
+      fs.writeFileSync(CONTEXT_TOKENS_FILE, JSON.stringify({ [TEST_USER_ID]: "ctx-old" }));
       const client = new ILinkClient();
       client.setSession(TEST_SESSION);
-      client.trackContextToken(TEST_USER_ID, "ctx-old");
-      fs.writeFileSync(CONTEXT_TOKENS_FILE, JSON.stringify({ [TEST_USER_ID]: "ctx-new" }));
+      const mockFetch = vi.fn().mockResolvedValue(mockFetchResponse({}));
+      vi.stubGlobal("fetch", mockFetch);
 
+      await client.sendText(TEST_USER_ID, "first");
+      fs.writeFileSync(CONTEXT_TOKENS_FILE, JSON.stringify({ [TEST_USER_ID]: "ctx-new" }));
+      await client.sendText(TEST_USER_ID, "second");
+
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).msg.context_token).toBe("ctx-old");
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body).msg.context_token).toBe("ctx-new");
+    });
+
+    it("keeps a token it received itself even when the file holds an older one", async () => {
+      // The daemon: its own token is never behind the file, and a failed save
+      // must not send it back to the old one.
+      const client = new ILinkClient();
+      client.setSession(TEST_SESSION);
+      client.trackContextToken(TEST_USER_ID, "ctx-mine");
+      fs.writeFileSync(CONTEXT_TOKENS_FILE, JSON.stringify({ [TEST_USER_ID]: "ctx-older" }));
       const mockFetch = vi.fn().mockResolvedValue(mockFetchResponse({}));
       vi.stubGlobal("fetch", mockFetch);
 
       await client.sendText(TEST_USER_ID, "hello");
 
-      expect(JSON.parse(mockFetch.mock.calls[0][1].body).msg.context_token).toBe("ctx-new");
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).msg.context_token).toBe("ctx-mine");
     });
 
     it("trackContextToken writes only its own user, keeping others on disk", () => {

@@ -132,3 +132,25 @@ export function claudeNameForMcpPid(
   if (claudePid === undefined) return undefined;
   return readClaudeSession(claudePid, sessionsDir)?.name;
 }
+
+// The pid of the live Claude Code process running session `sessionId`, found
+// by its own registry record. For callers that know only the session id — a
+// hook, whose parent may be a shell rather than Claude itself.
+export function claudePidForSessionId(
+  sessionId: string,
+  sessionsDir: string = CLAUDE_SESSIONS_DIR
+): number | undefined {
+  let files: string[];
+  try {
+    files = fs.readdirSync(sessionsDir);
+  } catch {
+    return undefined;
+  }
+  for (const f of files) {
+    const m = f.match(/^(\d+)\.json$/);
+    if (!m) continue;
+    const rec = readClaudeSession(Number(m[1]), sessionsDir);
+    if (rec?.sessionId === sessionId) return rec.pid;
+  }
+  return undefined;
+}

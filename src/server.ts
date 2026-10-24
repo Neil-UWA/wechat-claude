@@ -180,7 +180,7 @@ type ToolResult = {
 // revoked credential with an error in the body, and until now that came back
 // as a bare "Send failed". Record the expiry so wechat_status stops claiming
 // otherwise, and say what fixes it.
-function sendFailure(err: unknown): ToolResult {
+function sendFailure(err: unknown, delivered?: string): ToolResult {
   const msg = err instanceof Error ? err.message : String(err);
   // A newer login landed mid-send. Flagging expiry here would mark a perfectly
   // good credential dead and send the user back to a QR code for nothing.
@@ -217,13 +217,29 @@ function sendFailure(err: unknown): ToolResult {
       content: [
         {
           type: "text",
-          text: "Send failed: WeChat rejected the reply (sendmessage ret -2) because the conversation's reply window has closed — the user has not messaged for a long time (the window lasts about 24 h), or too many replies were sent since their last message. The login is fine; do NOT ask for a re-login. Keep this reply, and send it again as soon as the user's next WeChat message arrives (any message reopens the window). If the user is at the terminal, tell them to send any message on WeChat.",
+          text: `Send failed: WeChat rejected the reply (sendmessage ret -2) because the conversation's reply window has closed — the user has not messaged for a long time (the window lasts about 24 h), or too many replies were sent since their last message. The login is fine; do NOT ask for a re-login. ${delivered ?? "Nothing of this reply was delivered; keep all of it."} Send what is left as soon as the user's next WeChat message arrives (any message reopens the window). If the user is at the terminal, tell them to send any message on WeChat.`,
         },
       ],
       isError: true,
     };
   }
   return { content: [{ type: "text", text: `Send failed: ${msg}` }], isError: true };
+}
+
+// What a resend must leave out, after `deliveredChars` of `text` went out
+// before the failure. undefined when nothing did. The footer comes last, so
+// the delivered part is always a prefix of the text itself.
+function partialTextNote(
+  text: string,
+  deliveredChars: number,
+  what = "reply"
+): string | undefined {
+  if (deliveredChars === 0) return undefined;
+  const rest = text.slice(deliveredChars);
+  const tail = what === "caption" ? " and then the image" : "";
+  if (rest.length === 0)
+    return `The ${what} text was already delivered — do not send it again${tail ? "; what is left is the image alone, with no caption" : ""}.`;
+  return `The first ${deliveredChars} of ${text.length} characters of this ${what} were already delivered — do not repeat them. What is left is the remainder${tail}, starting: "${rest.slice(0, 40)}…".`;
 }
 
 const NOT_LOGGED_IN: ToolResult = {
@@ -424,6 +440,9 @@ server.tool(
   },
   async ({ to_user_id, text }) => {
     if (!client.isLoggedIn) return NOT_LOGGED_IN;
+    // A long reply goes out in chunks, and one rejected partway leaves the
+    // earlier ones in the user's chat; resending all of it would repeat them.
+    let deliveredChars = 0;
     try {
       clearTyping(to_user_id);
       const sent = withReplyFooter(
@@ -432,9 +451,10 @@ server.tool(
       );
       // Each chunk is recorded as it lands, which is what lets a quoted
       // ("引用") reply to it route straight back here with no "/s <name>".
-      await client.sendText(to_user_id, sent, (chunk) =>
-        recordChunk(to_user_id, chunk)
-      );
+      await client.sendText(to_user_id, sent, (chunk) => {
+        recordChunk(to_user_id, chunk);
+        deliveredChars += chunk.text.length;
+      });
       // Tells the daemon this session actually answered, so its silence
       // watchdog (usage-limit detection) stops tracking the delivery.
       markReplied(sessionId, to_user_id);
@@ -445,7 +465,7 @@ server.tool(
         ],
       };
     } catch (err) {
-      return sendFailure(err);
+      return sendFailure(err, partialTextNote(text, deliveredChars));
     }
   }
 );
@@ -460,6 +480,8 @@ server.tool(
   },
   async ({ to_user_id, file_path, caption }) => {
     if (!client.isLoggedIn) return NOT_LOGGED_IN;
+    let captionChars = 0;
+    let captionDone = false;
     try {
       const fs = await import("node:fs");
       if (!fs.existsSync(file_path)) {
@@ -481,9 +503,11 @@ server.tool(
       // already in the user's chat and quotable, and an upload that fails
       // afterwards must not leave it unresolvable.
       if (fullCaption) {
-        await client.sendText(to_user_id, fullCaption, (chunk) =>
-          recordChunk(to_user_id, chunk)
-        );
+        await client.sendText(to_user_id, fullCaption, (chunk) => {
+          recordChunk(to_user_id, chunk);
+          captionChars += chunk.text.length;
+        });
+        captionDone = true;
       }
       const imageIds = await client.sendImage(to_user_id, file_path);
       markReplied(sessionId, to_user_id);
@@ -503,7 +527,12 @@ server.tool(
         ],
       };
     } catch (err) {
-      return sendFailure(err);
+      return sendFailure(
+        err,
+        captionDone
+          ? "The caption was already delivered; what is left is the image alone, with no caption."
+          : partialTextNote(caption ?? "", captionChars, "caption")
+      );
     }
   }
 );

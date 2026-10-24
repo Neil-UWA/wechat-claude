@@ -217,6 +217,8 @@ export class ILinkClient {
   private updatesCursor = "";
   private pendingMessages: PendingMessage[] = [];
   private contextTokens = new Map<string, string>();
+  // Users whose token this process received from WeChat itself.
+  private trackedHere = new Set<string>();
   private typingTickets = new Map<string, { ticket: string; expiry: number }>();
   private polling = false;
   private pollAbort: AbortController | null = null;
@@ -265,6 +267,7 @@ export class ILinkClient {
   // map would put stale tokens over the fresh ones the daemon just saved.
   trackContextToken(userId: string, token: string): void {
     this.contextTokens.set(userId, token);
+    this.trackedHere.add(userId);
     const data = readContextTokensFile();
     if (data[userId] === token) return;
     data[userId] = token;
@@ -280,12 +283,15 @@ export class ILinkClient {
     }
   }
 
-  // The token to reply with. The file wins over memory: the daemon receives
-  // every message and saves each one's token there, while an MCP server only
-  // sees the messages routed to it. A long-lived session that kept the token
-  // it first read replied on a context WeChat had long since closed (ret -2),
-  // even after the user had written again.
+  // The token to reply with. A process that receives messages itself (the
+  // daemon) is never behind the file, so its own token stands — even if saving
+  // it failed. Everyone else takes the file's: the daemon saves every
+  // message's token there, while an MCP server only sees the messages routed
+  // to it. A long-lived session that kept the token it first read replied on a
+  // context WeChat had long since closed (ret -2), even after the user had
+  // written again.
   private contextTokenFor(userId: string): string | undefined {
+    if (this.trackedHere.has(userId)) return this.contextTokens.get(userId);
     const onDisk = readContextTokensFile()[userId];
     if (onDisk) this.contextTokens.set(userId, onDisk);
     return this.contextTokens.get(userId);
@@ -805,6 +811,7 @@ export class ILinkClient {
     this.updatesCursor = "";
     this.pendingMessages = [];
     this.contextTokens.clear();
+    this.trackedHere.clear();
     this.typingTickets.clear();
     this.clearSessionFile();
     clearLoginVerified();
