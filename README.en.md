@@ -82,7 +82,7 @@ Send these from WeChat to control routing:
 | `/s <name> <message>` | Send message to session by name (fuzzy match; if ambiguous, prefers the monitored / most recently active one) |
 | *(quote a reply, then type)* | **Quote** a session's reply in WeChat and write your answer: the message goes to the session that wrote the quoted reply — no `/s`, and your binding is left alone (see [Quoted replies](#quoted-replies)) |
 | `/s <pid> <message>` | Send message to session by pid (duplicate names are listed as `name#pid`) |
-| `/run [--safe] [dir] <task>` | Start a new Claude session in tmux to run a task. The launched session is instructed to send its result back to WeChat. Runs unattended by default (`--dangerously-skip-permissions`); pass `--safe` for `--permission-mode auto`, where routine actions go ahead and ones the classifier judges risky are blocked (auto mode must be available on your Claude account). If the classifier keeps blocking or fails, Claude Code falls back to asking and the task waits there; check with `/runs`. The first unattended run accepts skip-permissions mode in `~/.claude.json` on your behalf — a detached session cannot answer Claude Code's one-time dialog — and says so in its reply; see [SECURITY.md](SECURITY.md) |
+| `/run [-y] [dir] <task>` | Start a new Claude session in tmux to run a task. The launched session is instructed to send its result back to WeChat. Runs with `--permission-mode auto` by default: routine actions go ahead and ones the classifier judges risky are blocked (auto mode must be available on your Claude account). If the classifier keeps blocking or fails, Claude Code falls back to asking and the task waits there; check with `/runs`. Pass `-y` to skip all permission prompts (`--dangerously-skip-permissions`); the first such run accepts skip-permissions mode in `~/.claude.json` on your behalf — a detached session cannot answer Claude Code's one-time dialog — and says so in its reply; see [SECURITY.md](SECURITY.md) |
 | `/runs` | List running `/run` task sessions |
 | `/stop <name>` | Kill a `/run` task session (names start with `wc-`) |
 | `/close <number\|name\|pid>` | Close a Claude session remotely — terminates its Claude process (and MCP server) and removes it from the list. Unsaved work in that session is lost. If a name matches several sessions it lists them instead of guessing; `/close <name> all` closes all matches, `/close idle` cleans up every unmonitored session idle for 2+ hours. Every close reply ends with a remaining-session summary |
@@ -385,8 +385,9 @@ wechat-claude executes code on your machine in response to chat messages. Read
 
 - Only the account that scanned the login QR can message the bot; it is not
   publicly discoverable and (currently) cannot be added to group chats.
-- `/run` runs unattended by default (`--dangerously-skip-permissions`); use
-  `/run --safe <task>` for auto mode, where risky actions are blocked by a classifier.
+- `/run` runs in auto mode by default, where risky actions are blocked by a
+  classifier; `/run -y <task>` skips all permission prompts
+  (`--dangerously-skip-permissions`).
 - The bot token lives in `~/.claude/wechat/session.json` (0600); the whole
   data directory is 0700. Run only on a machine you control.
 - `setup` / `configure` change two things in `~/.claude/settings.json` so a

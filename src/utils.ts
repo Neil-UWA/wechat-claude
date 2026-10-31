@@ -53,19 +53,20 @@ export function imageExtension(buf: Buffer): string {
 }
 
 // Parse leading flags of a "/run" argument string.
-// Remote tasks run unattended, so skip-permissions is the default; "--safe"
-// opts into auto mode (a classifier reviews each action, blocking risky ones).
-// "-y" / "--yes" are still accepted as no-ops.
-export function parseRunFlags(args: string): { auto: boolean; rest: string } {
-  let auto = true;
+// Tasks run in auto mode by default (a classifier reviews each action and
+// blocks risky ones); "-y" / "--yes" opt into skipping permissions entirely.
+// "--safe", which selected auto mode while skipping was the default, is still
+// accepted and changes nothing.
+export function parseRunFlags(args: string): { skip: boolean; rest: string } {
+  let skip = false;
   let rest = args.trim();
   while (true) {
     const m = rest.match(/^(-y|--yes|--safe)(?:\s+|$)/);
     if (!m) break;
-    if (m[1] === "--safe") auto = false;
+    if (m[1] !== "--safe") skip = true;
     rest = rest.slice(m[0].length).trim();
   }
-  return { auto, rest };
+  return { skip, rest };
 }
 
 // Build the prompt for a remotely-launched Claude session so the result
