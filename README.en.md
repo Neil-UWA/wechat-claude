@@ -236,7 +236,8 @@ with `SendMessage`, tells you on WeChat which session it went to and how to
 ## CLI
 
 ```bash
-wechat-claude setup              # Register MCP server + /wechat command, then log in
+wechat-claude setup              # configure, then log in
+wechat-claude configure          # Register MCP server, /wechat command and rename hook, write the two settings under Security; no login
 wechat-claude login              # (Re)authenticate by scanning a QR code
 wechat-claude status             # Show login / daemon / service state
 wechat-claude daemon             # Run the daemon in the foreground (dies with the terminal)
@@ -257,6 +258,7 @@ In a git checkout the same commands are available as npm scripts
 
 ```bash
 npm install -g wechat-claude-sessions@latest
+wechat-claude configure          # pick up config a new version adds (no QR scan)
 wechat-claude daemon restart
 ```
 
@@ -387,6 +389,19 @@ wechat-claude executes code on your machine in response to chat messages. Read
   `/run --safe <task>` to require confirmation for bash commands.
 - The bot token lives in `~/.claude/wechat/session.json` (0600); the whole
   data directory is 0700. Run only on a machine you control.
+- `setup` / `configure` change two things in `~/.claude/settings.json` so a
+  session can work while you are away from the keyboard:
+  - `permissions.allow` gains `wechat_send_text`, `wechat_send_image`,
+    `wechat_get_messages`, `wechat_status` and `wechat_set_session_name`. In
+    auto mode these no longer go through the classifier — when it fails
+    ("gave no verdict") a reply simply doesn't go out. `wechat_login` /
+    `wechat_logout` are not included and still ask.
+  - `crossSessionInbound` is set to `"accept"` (only if you haven't set it). A
+    WeChat message relayed to another session is otherwise held for manual
+    review whenever the two sessions run in different permission modes, and
+    you are not there to review it. The trade-off: messages from any of your
+    own Claude sessions on this machine are delivered without review. Remove
+    the key if you don't want that.
 
 ## Troubleshooting
 

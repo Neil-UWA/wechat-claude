@@ -1,6 +1,7 @@
 // Claude Code's user settings (~/.claude/settings.json), which wechat-claude
-// only touches to register the hook that lets `/wechat <name>` rename the
-// session (see rename-hook.ts).
+// touches for three things: the hook that lets `/wechat <name>` rename the
+// session (see rename-hook.ts), allow rules for its everyday tools, and
+// accepting messages from the user's other Claude sessions.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -121,4 +122,62 @@ export function removeRenameHook(file = CLAUDE_SETTINGS_FILE): HookRemoveResult 
   else delete hooks.UserPromptSubmit;
   if (!writeJsonAtomic(file, settings)) return "failed";
   return ourHooksOnDisk(file)?.length === 0 ? "removed" : "failed";
+}
+
+// The tools a monitoring session calls on every WeChat message. In auto mode
+// each call otherwise goes to the classifier, and when the classifier can't
+// answer ("gave no verdict") the call is refused — a reply the user is waiting
+// for simply doesn't go out. Login and logout are left out on purpose: they
+// change the account, and should still be asked about.
+export const WECHAT_ALLOW_RULES = [
+  "mcp__wechat__wechat_send_text",
+  "mcp__wechat__wechat_send_image",
+  "mcp__wechat__wechat_get_messages",
+  "mcp__wechat__wechat_status",
+  "mcp__wechat__wechat_set_session_name",
+];
+
+// Relaying a WeChat message to another session (SendMessage) is held for
+// manual review whenever the two sessions run in different permission modes —
+// and nobody is at the terminal to review it, which is the point of WeChat.
+// "accept" delivers them. It trusts every Claude session of this user on this
+// machine, so it is only set where the user has not chosen a value already.
+const CROSS_SESSION_KEY = "crossSessionInbound";
+
+export type WechatSettingsResult = {
+  added: string[]; // allow rules this call added
+  crossSession: "set" | "already" | "kept"; // "kept": the user chose another value
+} | null; // the file is corrupt, shaped unlike Claude Code's, or unwritable
+
+export function installWechatSettings(
+  file = CLAUDE_SETTINGS_FILE
+): WechatSettingsResult {
+  const settings = fs.existsSync(file) ? readJsonObject(file) : {};
+  if (settings === null) return null;
+  const permissions = settings.permissions ?? {};
+  if (typeof permissions !== "object" || permissions === null || Array.isArray(permissions))
+    return null;
+  const perms = permissions as Record<string, unknown>;
+  const allow = perms.allow ?? [];
+  if (!Array.isArray(allow)) return null;
+
+  const added = WECHAT_ALLOW_RULES.filter((r) => !allow.includes(r));
+  const current = settings[CROSS_SESSION_KEY];
+  const crossSession =
+    current === "accept" ? "already" : current === undefined ? "set" : "kept";
+  if (added.length === 0 && crossSession !== "set") return { added, crossSession };
+
+  perms.allow = [...allow, ...added];
+  settings.permissions = perms;
+  if (crossSession === "set") settings[CROSS_SESSION_KEY] = "accept";
+  if (!writeJsonAtomic(file, settings)) return null;
+
+  // Read back, as for the hook: Claude Code may have rewritten the file.
+  const after = readJsonObject(file);
+  const afterAllow = (after?.permissions as Record<string, unknown> | undefined)?.allow;
+  const ok =
+    Array.isArray(afterAllow) &&
+    WECHAT_ALLOW_RULES.every((r) => afterAllow.includes(r)) &&
+    (crossSession !== "set" || after?.[CROSS_SESSION_KEY] === "accept");
+  return ok ? { added, crossSession } : null;
 }

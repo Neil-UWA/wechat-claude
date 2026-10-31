@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { installRenameHook, removeRenameHook, renameHookCommand } from "../claude-settings.js";
+import {
+  WECHAT_ALLOW_RULES,
+  installRenameHook,
+  installWechatSettings,
+  removeRenameHook,
+  renameHookCommand,
+} from "../claude-settings.js";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wc-claude-settings-"));
 const FILE = path.join(dir, "settings.json");
@@ -112,5 +118,61 @@ describe("installRenameHook", () => {
       fs.writeFileSync(FILE, JSON.stringify({ theme: "dark" }));
       expect(removeRenameHook(FILE)).toBe("absent");
     });
+  });
+});
+
+describe("installWechatSettings", () => {
+  beforeEach(() => {
+    try {
+      fs.unlinkSync(FILE);
+    } catch {}
+  });
+
+  it("allows the WeChat tools and accepts cross-session messages", () => {
+    expect(installWechatSettings(FILE)).toEqual({ added: WECHAT_ALLOW_RULES, crossSession: "set" });
+    const s = read();
+    expect(s.permissions.allow).toEqual(WECHAT_ALLOW_RULES);
+    expect(s.crossSessionInbound).toBe("accept");
+    // Account-changing tools keep asking.
+    expect(s.permissions.allow).not.toContain("mcp__wechat__wechat_login");
+    expect(s.permissions.allow).not.toContain("mcp__wechat__wechat_logout");
+  });
+
+  it("merges with existing rules and settings, without duplicates", () => {
+    fs.writeFileSync(
+      FILE,
+      JSON.stringify({
+        theme: "dark",
+        permissions: { allow: ["Bash(ls)", "mcp__wechat__wechat_status"], deny: ["Bash(rm *)"] },
+      })
+    );
+    const r = installWechatSettings(FILE)!;
+    expect(r.added).not.toContain("mcp__wechat__wechat_status");
+    const s = read();
+    expect(s.theme).toBe("dark");
+    expect(s.permissions.deny).toEqual(["Bash(rm *)"]);
+    expect(s.permissions.allow.filter((x: string) => x === "mcp__wechat__wechat_status")).toHaveLength(1);
+    expect(s.permissions.allow[0]).toBe("Bash(ls)");
+  });
+
+  it("is idempotent and does not rewrite the file", () => {
+    installWechatSettings(FILE);
+    const before = fs.statSync(FILE).mtimeMs;
+    expect(installWechatSettings(FILE)).toEqual({ added: [], crossSession: "already" });
+    expect(fs.statSync(FILE).mtimeMs).toBe(before);
+  });
+
+  it("keeps a crossSessionInbound the user chose", () => {
+    fs.writeFileSync(FILE, JSON.stringify({ crossSessionInbound: "hold" }));
+    expect(installWechatSettings(FILE)!.crossSession).toBe("kept");
+    expect(read().crossSessionInbound).toBe("hold");
+  });
+
+  it("leaves a corrupt or oddly shaped file alone", () => {
+    fs.writeFileSync(FILE, "{ nope");
+    expect(installWechatSettings(FILE)).toBeNull();
+    expect(fs.readFileSync(FILE, "utf-8")).toBe("{ nope");
+    fs.writeFileSync(FILE, JSON.stringify({ permissions: { allow: "everything" } }));
+    expect(installWechatSettings(FILE)).toBeNull();
   });
 });

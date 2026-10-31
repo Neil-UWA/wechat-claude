@@ -205,7 +205,8 @@ session 用 `SendMessage` 找它时要用的（见 `ListAgents`）。`wechat_sta
 ## CLI
 
 ```bash
-wechat-claude setup              # 注册 MCP server + /wechat 命令，然后登录
+wechat-claude setup              # configure，然后登录
+wechat-claude configure          # 注册 MCP server、/wechat 命令和改名 hook，写入下面「安全」里的两项设置；不登录
 wechat-claude login              # （重新）扫码认证
 wechat-claude status             # 查看登录 / daemon / 服务状态
 wechat-claude daemon             # 前台运行 daemon（跟着终端一起退出）
@@ -226,6 +227,7 @@ wechat-claude remove-hook        # 移除 /wechat 改名用的 hook（卸载前�
 
 ```bash
 npm install -g wechat-claude-sessions@latest
+wechat-claude configure          # 补上新版本带来的配置（不用重新扫码）
 wechat-claude daemon restart
 ```
 
@@ -328,6 +330,15 @@ wechat-claude 会响应聊天消息、在你的机器上执行代码。完整威
   `/run --safe <任务>` 可以让 bash 命令需要确认。
 - 机器人 token 存在 `~/.claude/wechat/session.json`（0600），整个数据目录是 0700。
   只在你自己掌控的机器上运行。
+- `setup` / `configure` 会改 `~/.claude/settings.json` 里的两处，好让 session 在你不在
+  电脑旁时也能干活：
+  - `permissions.allow` 加上 `wechat_send_text`、`wechat_send_image`、`wechat_get_messages`、
+    `wechat_status`、`wechat_set_session_name`。auto 模式下这些调用不再经过分类器 —— 分类器
+    一出故障（"gave no verdict"），回复就发不出去。`wechat_login` / `wechat_logout` 不在其中，
+    仍会询问。
+  - `crossSessionInbound` 设为 `"accept"`（只在你没设过时）。转给另一个 session 的微信消息，
+    若两个 session 权限模式不同，默认会被扣下等人工审核，而你人不在电脑旁。代价是：本机你
+    自己的任何 Claude session 发来的消息都会直接送达，不再审核。不想要就删掉这一项。
 
 ## 故障排查
 
