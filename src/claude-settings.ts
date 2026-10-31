@@ -1,6 +1,6 @@
 // Claude Code's user settings (~/.claude/settings.json), which wechat-claude
 // touches for three things: the hook that lets `/wechat <name>` rename the
-// session (see rename-hook.ts), allow rules for its everyday tools, and
+// session (see rename-hook.ts), an allow rule for its tools, and
 // accepting messages from the user's other Claude sessions.
 import fs from "node:fs";
 import os from "node:os";
@@ -124,18 +124,12 @@ export function removeRenameHook(file = CLAUDE_SETTINGS_FILE): HookRemoveResult 
   return ourHooksOnDisk(file)?.length === 0 ? "removed" : "failed";
 }
 
-// The tools a monitoring session calls on every WeChat message. In auto mode
-// each call otherwise goes to the classifier, and when the classifier can't
-// answer ("gave no verdict") the call is refused — a reply the user is waiting
-// for simply doesn't go out. Login and logout are left out on purpose: they
-// change the account, and should still be asked about.
-export const WECHAT_ALLOW_RULES = [
-  "mcp__wechat__wechat_send_text",
-  "mcp__wechat__wechat_send_image",
-  "mcp__wechat__wechat_get_messages",
-  "mcp__wechat__wechat_status",
-  "mcp__wechat__wechat_set_session_name",
-];
+// Every tool of the wechat MCP server. In auto mode each call otherwise goes
+// to the classifier, and when the classifier can't answer ("gave no verdict")
+// the call is refused — a reply the user is waiting for simply doesn't go out,
+// and a login expiring while nobody is at the keyboard can't be renewed. A
+// server-wide rule rather than a list, so tools added later are covered too.
+export const WECHAT_ALLOW_RULES = ["mcp__wechat"];
 
 // Relaying a WeChat message to another session (SendMessage) is held for
 // manual review whenever the two sessions run in different permission modes —

@@ -391,11 +391,10 @@ wechat-claude executes code on your machine in response to chat messages. Read
   data directory is 0700. Run only on a machine you control.
 - `setup` / `configure` change two things in `~/.claude/settings.json` so a
   session can work while you are away from the keyboard:
-  - `permissions.allow` gains `wechat_send_text`, `wechat_send_image`,
-    `wechat_get_messages`, `wechat_status` and `wechat_set_session_name`. In
-    auto mode these no longer go through the classifier — when it fails
-    ("gave no verdict") a reply simply doesn't go out. `wechat_login` /
-    `wechat_logout` are not included and still ask.
+  - `permissions.allow` gains `mcp__wechat`: every tool of the wechat MCP
+    server, `wechat_login` / `wechat_logout` included. In auto mode these no
+    longer go through the classifier — when it fails ("gave no verdict") a
+    reply simply doesn't go out.
   - `crossSessionInbound` is set to `"accept"` (only if you haven't set it). A
     WeChat message relayed to another session is otherwise held for manual
     review whenever the two sessions run in different permission modes, and

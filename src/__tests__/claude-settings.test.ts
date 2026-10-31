@@ -132,10 +132,8 @@ describe("installWechatSettings", () => {
     expect(installWechatSettings(FILE)).toEqual({ added: WECHAT_ALLOW_RULES, crossSession: "set" });
     const s = read();
     expect(s.permissions.allow).toEqual(WECHAT_ALLOW_RULES);
+    expect(s.permissions.allow).toEqual(["mcp__wechat"]);
     expect(s.crossSessionInbound).toBe("accept");
-    // Account-changing tools keep asking.
-    expect(s.permissions.allow).not.toContain("mcp__wechat__wechat_login");
-    expect(s.permissions.allow).not.toContain("mcp__wechat__wechat_logout");
   });
 
   it("merges with existing rules and settings, without duplicates", () => {
@@ -143,15 +141,15 @@ describe("installWechatSettings", () => {
       FILE,
       JSON.stringify({
         theme: "dark",
-        permissions: { allow: ["Bash(ls)", "mcp__wechat__wechat_status"], deny: ["Bash(rm *)"] },
+        permissions: { allow: ["Bash(ls)", "mcp__wechat"], deny: ["Bash(rm *)"] },
       })
     );
     const r = installWechatSettings(FILE)!;
-    expect(r.added).not.toContain("mcp__wechat__wechat_status");
+    expect(r.added).not.toContain("mcp__wechat");
     const s = read();
     expect(s.theme).toBe("dark");
     expect(s.permissions.deny).toEqual(["Bash(rm *)"]);
-    expect(s.permissions.allow.filter((x: string) => x === "mcp__wechat__wechat_status")).toHaveLength(1);
+    expect(s.permissions.allow.filter((x: string) => x === "mcp__wechat")).toHaveLength(1);
     expect(s.permissions.allow[0]).toBe("Bash(ls)");
   });
 

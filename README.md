@@ -332,10 +332,9 @@ wechat-claude 会响应聊天消息、在你的机器上执行代码。完整威
   只在你自己掌控的机器上运行。
 - `setup` / `configure` 会改 `~/.claude/settings.json` 里的两处，好让 session 在你不在
   电脑旁时也能干活：
-  - `permissions.allow` 加上 `wechat_send_text`、`wechat_send_image`、`wechat_get_messages`、
-    `wechat_status`、`wechat_set_session_name`。auto 模式下这些调用不再经过分类器 —— 分类器
-    一出故障（"gave no verdict"），回复就发不出去。`wechat_login` / `wechat_logout` 不在其中，
-    仍会询问。
+  - `permissions.allow` 加上 `mcp__wechat`，即 wechat MCP 的全部工具（含 `wechat_login` /
+    `wechat_logout`）。auto 模式下这些调用不再经过分类器 —— 分类器一出故障（"gave no
+    verdict"），回复就发不出去。
   - `crossSessionInbound` 设为 `"accept"`（只在你没设过时）。转给另一个 session 的微信消息，
     若两个 session 权限模式不同，默认会被扣下等人工审核，而你人不在电脑旁。代价是：本机你
     自己的任何 Claude session 发来的消息都会直接送达，不再审核。不想要就删掉这一项。
