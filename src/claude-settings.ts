@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readJsonObject, writeJsonAtomic } from "./json-file.js";
+import { readJsonObject, readJsonObjectOrEmpty, writeJsonAtomic } from "./json-file.js";
 
 export const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), ".claude", "settings.json");
 
@@ -39,7 +39,7 @@ export function renameHookCommand(scriptPath: string): string {
 function load(
   file: string
 ): { settings: Record<string, unknown>; groups: unknown[] } | null {
-  const settings = fs.existsSync(file) ? readJsonObject(file) : {};
+  const settings = readJsonObjectOrEmpty(file);
   if (settings === null) return null;
   const hooks = settings.hooks ?? {};
   if (typeof hooks !== "object" || hooks === null || Array.isArray(hooks)) return null;
@@ -146,7 +146,7 @@ export type WechatSettingsResult = {
 export function installWechatSettings(
   file = CLAUDE_SETTINGS_FILE
 ): WechatSettingsResult {
-  const settings = fs.existsSync(file) ? readJsonObject(file) : {};
+  const settings = readJsonObjectOrEmpty(file);
   if (settings === null) return null;
   const permissions = settings.permissions ?? {};
   if (typeof permissions !== "object" || permissions === null || Array.isArray(permissions))
@@ -166,7 +166,8 @@ export function installWechatSettings(
   if (crossSession === "set") settings[CROSS_SESSION_KEY] = "accept";
   if (!writeJsonAtomic(file, settings)) return null;
 
-  // Read back, as for the hook: Claude Code may have rewritten the file.
+  // Read back, as for the hook: Claude Code may have rewritten the file. This
+  // confirms our own change survived, not that the rest of the file did.
   const after = readJsonObject(file);
   const afterAllow = (after?.permissions as Record<string, unknown> | undefined)?.allow;
   const ok =

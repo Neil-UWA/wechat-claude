@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { readJsonObject, writeJsonAtomic } from "../json-file.js";
+import { readJsonObject, readJsonObjectOrEmpty, writeJsonAtomic } from "../json-file.js";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wc-json-file-"));
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -17,6 +17,19 @@ describe("readJsonObject", () => {
       expect(readJsonObject(f)).toBeNull();
     }
     expect(readJsonObject(path.join(dir, "missing.json"))).toBeNull();
+  });
+});
+
+describe("readJsonObjectOrEmpty", () => {
+  it("reads a missing file as {}, a corrupt or unreadable one as null", () => {
+    expect(readJsonObjectOrEmpty(path.join(dir, "absent.json"))).toEqual({});
+    const f = path.join(dir, "corrupt.json");
+    fs.writeFileSync(f, "{ broken");
+    expect(readJsonObjectOrEmpty(f)).toBeNull();
+    fs.writeFileSync(f, JSON.stringify({ a: 1 }));
+    expect(readJsonObjectOrEmpty(f)).toEqual({ a: 1 });
+    // A directory where the file should be is not "missing".
+    expect(readJsonObjectOrEmpty(dir)).toBeNull();
   });
 });
 
@@ -52,6 +65,16 @@ describe("writeJsonAtomic", () => {
     expect(writeJsonAtomic(link, { a: 1 })).toBe(true);
     expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
     expect(readJsonObject(real)).toEqual({ a: 1 });
+  });
+
+  it("refuses a symlink loop rather than renaming over the link", () => {
+    const a = path.join(dir, "loop-a.json");
+    const b = path.join(dir, "loop-b.json");
+    fs.symlinkSync(b, a);
+    fs.symlinkSync(a, b);
+    expect(writeJsonAtomic(a, { a: 1 })).toBe(false);
+    expect(fs.lstatSync(a).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(a)).toBe(b);
   });
 
   it("keeps a group-writable mode the umask would narrow", () => {

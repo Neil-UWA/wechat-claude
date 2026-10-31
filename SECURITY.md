@@ -16,7 +16,9 @@ Key facts to understand:
 - **`/run` defaults to `--dangerously-skip-permissions`.** Tasks run
   unattended without per-action confirmation. Use `/run --safe <task>` for
   `--permission-mode auto`, where a classifier reviews each action and blocks
-  risky ones (auto mode must be available on your Claude account).
+  risky ones (auto mode must be available on your Claude account). Repeated
+  blocks or a classifier failure make Claude Code fall back to asking, and the
+  detached task then waits for an answer.
 - **The first such `/run` accepts skip-permissions mode on your behalf.**
   Claude Code gates that mode behind a one-time interactive dialog, which a
   detached tmux session can never answer — the task would hang on the prompt

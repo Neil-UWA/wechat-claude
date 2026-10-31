@@ -7,8 +7,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 // The file a path finally names, following symlinks even when the last one
-// dangles (realpath fails on those). Gives up after a few hops, on a loop.
-function resolveLinks(file: string): string {
+// dangles (realpath fails on those). Null on a loop (or an absurdly long
+// chain): falling back to the path itself would rename over the link.
+function resolveLinks(file: string): string | null {
   try {
     return fs.realpathSync(file);
   } catch {}
@@ -22,7 +23,7 @@ function resolveLinks(file: string): string {
     }
     p = path.resolve(path.dirname(p), link);
   }
-  return file;
+  return null;
 }
 
 // The file's top-level object, or null when it is missing, unreadable, not
@@ -31,6 +32,25 @@ function resolveLinks(file: string): string {
 export function readJsonObject(file: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf-8"));
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
+      return parsed as Record<string, unknown>;
+  } catch {}
+  return null;
+}
+
+// As readJsonObject, but a missing file reads as {} — told apart from a
+// corrupt one by the read itself, not by an earlier existsSync that another
+// writer could make stale. A dangling symlink is missing too; writing then
+// creates its target.
+export function readJsonObjectOrEmpty(file: string): Record<string, unknown> | null {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf-8");
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? {} : null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
     if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
       return parsed as Record<string, unknown>;
   } catch {}
@@ -52,6 +72,7 @@ export function readJsonObject(file: string): Record<string, unknown> | null {
 // end up holding the word "undefined" in place of the user's config.
 export function writeJsonAtomic(file: string, value: Record<string, unknown>): boolean {
   const target = resolveLinks(file);
+  if (target === null) return false;
   const tmp = `${target}.wechat-claude.${process.pid}.tmp`;
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
