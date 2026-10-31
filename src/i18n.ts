@@ -106,7 +106,8 @@ type Msgs = {
   bypassAutoAccepted: string;
   bypassUnavailable: (configFile: string) => string;
   permSkip: string;
-  permSafe: string;
+  permAuto: string;
+  runAllowMissing: string;
   // /runs, /stop
   runsNone: string;
   runsList: (count: number, body: string) => string;
@@ -193,9 +194,9 @@ const zh: Msgs = {
     "引用某条回复再打字 — 直接发给写那条回复的 session，不用 /s",
     "",
     "🚀 跑任务",
-    "/run 修复登录bug — 新开 Claude 执行（默认无人值守）",
+    "/run 修复登录bug — 新开 Claude 执行（auto 模式）",
     "/run myapp 跑测试 — 指定目录",
-    "/run --safe <任务> — bash 命令需在电脑确认",
+    "/run -y <任务> — 跳过所有权限确认",
     "/runs — 任务列表",
     "/stop 1 — 按编号终止，/stop all 全部",
     "",
@@ -235,7 +236,7 @@ const zh: Msgs = {
   useNone: "当前没有绑定。\n/use <编号|名字|pid> — 绑定后你的所有消息都直接发给该 session\n/use off — 取消绑定",
   useUnbound: "已取消绑定，恢复默认路由（最近活跃且监控中的 session）。",
   runUsage:
-    "用法: /run [--safe] [目录] <任务>\n\n默认跳过权限确认（无人值守）。加 --safe 则只自动接受编辑，bash 命令需要在电脑上确认。\n\n例:\n/run 检查最近的 PR\n/run myapp 跑一遍测试并修复失败\n/run --safe /path/to/repo 修复 bug",
+    "用法: /run [-y] [目录] <任务>\n\n默认用 auto 模式：常规操作自动执行，危险操作由分类器拦下。加 -y 则跳过所有权限确认。\n\n例:\n/run 检查最近的 PR\n/run myapp 跑一遍测试并修复失败\n/run -y /path/to/repo 修复 bug并推送",
   runDirNotFound: (dirHint, sessDirs, searchDirs, task, configNote) =>
     `找不到目录 "${dirHint}"，已取消（避免任务跑错地方）。\n\n可用的 session 目录:\n${sessDirs}\n\n也可以用这些目录下的项目名:\n${searchDirs}\n\n或直接给绝对路径。如果 "${dirHint}" 是任务内容而不是目录，用: /run . ${task}${configNote}`,
   runNoSession: "没有活跃的 session，请指定目录。\n用法: /run <目录> <任务>",
@@ -246,9 +247,11 @@ const zh: Msgs = {
   bypassAutoAccepted:
     "提示: 已在 ~/.claude.json 中接受 Claude Code 的免确认模式（bypassPermissionsModeAccepted）。否则 /run 启动的 session 会停在一次性确认对话框上，无人应答而永久卡住。仅需一次。",
   bypassUnavailable: (configFile) =>
-    `无法启动任务: 读写 ${configFile} 失败，没能确认免确认模式已开启。直接启动会永久卡在确认对话框上，所以取消了。\n\n解决办法: 在电脑上运行一次 claude --dangerously-skip-permissions 并接受，或改用 /run --safe <任务>。`,
-  permSkip: "跳过确认（默认）",
-  permSafe: "仅自动接受编辑 (--safe)",
+    `无法启动任务: 读写 ${configFile} 失败，没能确认免确认模式已开启。直接启动会永久卡在确认对话框上，所以取消了。\n\n解决办法: 在电脑上运行一次 claude --dangerously-skip-permissions 并接受，或去掉 -y 用 auto 模式运行。`,
+  permSkip: "跳过确认 (-y)",
+  permAuto: "auto 模式（默认）",
+  runAllowMissing:
+    "提示: ~/.claude/settings.json 里还没有放行微信工具的规则，auto 模式下任务发回结果时可能被分类器拦下。在电脑上运行一次 wechat-claude configure 即可。",
   runsNone: "当前没有 /run 启动的任务 session。",
   runsList: (count, body) =>
     `运行中的任务 (${count}):\n\n${body}\n\n/stop <编号|名称> 终止，/stop all 全部终止\n电脑上: tmux attach -t <名称>`,
@@ -344,9 +347,9 @@ const en: Msgs = {
     "Quote a reply, then type — goes straight to the session that wrote it, no /s needed",
     "",
     "🚀 Run tasks",
-    "/run fix login bug — start a Claude session (unattended by default)",
+    "/run fix login bug — start a Claude session (auto mode)",
     "/run myapp run tests — pick a directory",
-    "/run --safe <task> — bash commands need confirmation at the computer",
+    "/run -y <task> — skip all permission prompts",
     "/runs — running tasks",
     "/stop 1 — stop by number, /stop all for all",
     "",
@@ -387,7 +390,7 @@ const en: Msgs = {
   useNone: "No binding.\n/use <number|name|pid> — bind so all your messages go to that session\n/use off — unbind",
   useUnbound: "Unbound; back to default routing (most recent monitoring session).",
   runUsage:
-    "Usage: /run [--safe] [dir] <task>\n\nUnattended by default (skips permission prompts). With --safe, only edits auto-apply; bash commands wait for confirmation at the computer.\n\ne.g.\n/run check the latest PR\n/run myapp run the tests and fix failures\n/run --safe /path/to/repo fix the bug",
+    "Usage: /run [-y] [dir] <task>\n\nAuto mode by default: routine actions go ahead, risky ones are blocked by the classifier. With -y, all permission prompts are skipped.\n\ne.g.\n/run check the latest PR\n/run myapp run the tests and fix failures\n/run -y /path/to/repo fix the bug and push",
   runDirNotFound: (dirHint, sessDirs, searchDirs, task, configNote) =>
     `Directory "${dirHint}" not found — cancelled (to avoid running in the wrong place).\n\nAvailable session dirs:\n${sessDirs}\n\nOr a project under these search dirs:\n${searchDirs}\n\nOr give an absolute path. If "${dirHint}" is task text, not a dir, use: /run . ${task}${configNote}`,
   runNoSession: "No active session — specify a directory.\nUsage: /run <dir> <task>",
@@ -398,9 +401,11 @@ const en: Msgs = {
   bypassAutoAccepted:
     "Note: accepted Claude Code's skip-permissions mode in ~/.claude.json (bypassPermissionsModeAccepted). Without it a /run session stops at a one-time confirmation dialog that nobody is there to answer. One time only.",
   bypassUnavailable: (configFile) =>
-    `Cannot start the task: ${configFile} could not be read or written, so skip-permissions mode is not confirmed as accepted. Launching anyway would hang on the consent dialog forever, so the run was cancelled.\n\nFix: run claude --dangerously-skip-permissions once at the computer and accept it, or use /run --safe <task>.`,
-  permSkip: "skip confirmations (default)",
-  permSafe: "auto-accept edits only (--safe)",
+    `Cannot start the task: ${configFile} could not be read or written, so skip-permissions mode is not confirmed as accepted. Launching anyway would hang on the consent dialog forever, so the run was cancelled.\n\nFix: run claude --dangerously-skip-permissions once at the computer and accept it, or drop -y to run in auto mode.`,
+  permSkip: "skip confirmations (-y)",
+  permAuto: "auto mode (default)",
+  runAllowMissing:
+    "Note: ~/.claude/settings.json has no allow rule for the WeChat tools yet, so in auto mode the classifier may block the task from sending its result back. Run wechat-claude configure once at the computer.",
   runsNone: "No /run task sessions right now.",
   runsList: (count, body) =>
     `Running tasks (${count}):\n\n${body}\n\n/stop <number|name> to stop, /stop all for all\nAt the computer: tmux attach -t <name>`,

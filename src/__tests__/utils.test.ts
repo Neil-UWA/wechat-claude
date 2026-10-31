@@ -138,35 +138,32 @@ describe("aesEcbPaddedSize", () => {
 });
 
 describe("parseRunFlags", () => {
-  it("defaults to auto (skip permissions)", () => {
+  it("defaults to auto mode, not skipping permissions", () => {
     expect(parseRunFlags("myapp 跑测试")).toEqual({
-      auto: true,
+      skip: false,
       rest: "myapp 跑测试",
     });
   });
 
-  it("-y is accepted as a no-op", () => {
-    expect(parseRunFlags("-y myapp 跑测试")).toEqual({
-      auto: true,
-      rest: "myapp 跑测试",
-    });
+  it("-y / --yes opt into skipping permissions", () => {
+    expect(parseRunFlags("-y myapp 跑测试")).toEqual({ skip: true, rest: "myapp 跑测试" });
+    expect(parseRunFlags("--yes 修复 bug")).toEqual({ skip: true, rest: "修复 bug" });
   });
 
-  it("--safe opts back into acceptEdits", () => {
-    expect(parseRunFlags("--safe 修复 bug")).toEqual({
-      auto: false,
-      rest: "修复 bug",
-    });
+  it("--safe is still accepted, and wins over -y", () => {
+    expect(parseRunFlags("--safe 修复 bug")).toEqual({ skip: false, rest: "修复 bug" });
+    expect(parseRunFlags("--safe -y 修复 bug")).toEqual({ skip: false, rest: "修复 bug" });
+    expect(parseRunFlags("-y --safe 修复 bug")).toEqual({ skip: false, rest: "修复 bug" });
   });
 
-  it("bare --safe leaves empty rest", () => {
-    expect(parseRunFlags("--safe")).toEqual({ auto: false, rest: "" });
+  it("bare flag leaves empty rest", () => {
+    expect(parseRunFlags("-y")).toEqual({ skip: true, rest: "" });
   });
 
-  it("--safe embedded in the task is not a flag", () => {
-    expect(parseRunFlags("检查 --safe 参数")).toEqual({
-      auto: true,
-      rest: "检查 --safe 参数",
+  it("a flag embedded in the task is not a flag", () => {
+    expect(parseRunFlags("检查 -y 参数")).toEqual({
+      skip: false,
+      rest: "检查 -y 参数",
     });
   });
 });

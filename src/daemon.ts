@@ -61,6 +61,7 @@ import {
   resolveQuoteTarget,
 } from "./quote.js";
 import { CLAUDE_CONFIG_FILE, ensureBypassAccepted } from "./claude-config.js";
+import { wechatToolsAllowed } from "./claude-settings.js";
 import { type Lang, formatAgo, getLang, marker, t } from "./i18n.js";
 import { checkForUpdate } from "./version.js";
 import { claudeRecordsForSessions } from "./claude-sessions.js";
@@ -647,7 +648,7 @@ function handleRunCommand(
   };
 
   const m = t();
-  const { auto, rest } = parseRunFlags(args);
+  const { skip, rest } = parseRunFlags(args);
 
   if (!rest) {
     sendReply(m.runUsage);
@@ -708,17 +709,18 @@ function handleRunCommand(
   const taskFile = path.join(os.tmpdir(), `wechat-run-${sessionName}.txt`);
   fs.writeFileSync(taskFile, buildRunPrompt(task, msg.fromUserId));
 
-  // acceptEdits keeps unattended tasks moving without opening up bash; -y
-  // opts into full skip-permissions for tasks that need to run commands.
-  const permFlag = auto
+  // Auto mode by default: the classifier lets routine commands through and
+  // stops risky ones. (acceptEdits, used before, held every bash command for a
+  // confirmation nobody was at the computer to give.) -y skips permissions.
+  const permFlag = skip
     ? "--dangerously-skip-permissions"
-    : "--permission-mode acceptEdits";
+    : "--permission-mode auto";
 
   // Skip-permissions mode has a one-time consent dialog. The session starts
   // detached with nobody to answer it, so accept it up front or the task hangs
   // on the prompt forever while /runs reports it as running. If we cannot
   // confirm the acceptance, refuse to launch rather than create that hang.
-  const bypass = auto ? ensureBypassAccepted() : "already";
+  const bypass = skip ? ensureBypassAccepted() : "already";
   if (bypass === "accepted")
     log("Accepted bypassPermissionsModeAccepted in ~/.claude.json");
   if (bypass === "failed") {
@@ -754,9 +756,11 @@ function handleRunCommand(
     m.runStarted(
       path.basename(cwd),
       task,
-      auto ? m.permSkip : m.permSafe,
+      skip ? m.permSkip : m.permAuto,
       sessionName
-    ) + (bypass === "accepted" ? `\n\n${m.bypassAutoAccepted}` : "")
+    ) +
+      (bypass === "accepted" ? `\n\n${m.bypassAutoAccepted}` : "") +
+      (!skip && !wechatToolsAllowed() ? `\n\n${m.runAllowMissing}` : "")
   );
 }
 
