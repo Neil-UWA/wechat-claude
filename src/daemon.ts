@@ -708,11 +708,12 @@ function handleRunCommand(
   const taskFile = path.join(os.tmpdir(), `wechat-run-${sessionName}.txt`);
   fs.writeFileSync(taskFile, buildRunPrompt(task, msg.fromUserId));
 
-  // acceptEdits keeps unattended tasks moving without opening up bash; -y
-  // opts into full skip-permissions for tasks that need to run commands.
+  // --safe runs in auto mode: the classifier lets routine commands through and
+  // stops risky ones. acceptEdits, used before, held every bash command for a
+  // confirmation nobody was at the computer to give.
   const permFlag = auto
     ? "--dangerously-skip-permissions"
-    : "--permission-mode acceptEdits";
+    : "--permission-mode auto";
 
   // Skip-permissions mode has a one-time consent dialog. The session starts
   // detached with nobody to answer it, so accept it up front or the task hangs

@@ -15,8 +15,8 @@ Key facts to understand:
   and never share or publicize the bot.
 - **`/run` defaults to `--dangerously-skip-permissions`.** Tasks run
   unattended without per-action confirmation. Use `/run --safe <task>` for
-  `--permission-mode acceptEdits` (bash commands then wait for confirmation at
-  the computer).
+  `--permission-mode auto`, where a classifier reviews each action and blocks
+  risky ones (auto mode must be available on your Claude account).
 - **The first such `/run` accepts skip-permissions mode on your behalf.**
   Claude Code gates that mode behind a one-time interactive dialog, which a
   detached tmux session can never answer — the task would hang on the prompt

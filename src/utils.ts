@@ -54,7 +54,7 @@ export function imageExtension(buf: Buffer): string {
 
 // Parse leading flags of a "/run" argument string.
 // Remote tasks run unattended, so skip-permissions is the default; "--safe"
-// opts back into acceptEdits (bash commands then wait for confirmation).
+// opts into auto mode (a classifier reviews each action, blocking risky ones).
 // "-y" / "--yes" are still accepted as no-ops.
 export function parseRunFlags(args: string): { auto: boolean; rest: string } {
   let auto = true;

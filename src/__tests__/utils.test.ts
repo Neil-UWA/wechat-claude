@@ -152,7 +152,7 @@ describe("parseRunFlags", () => {
     });
   });
 
-  it("--safe opts back into acceptEdits", () => {
+  it("--safe opts out of skip-permissions", () => {
     expect(parseRunFlags("--safe 修复 bug")).toEqual({
       auto: false,
       rest: "修复 bug",
