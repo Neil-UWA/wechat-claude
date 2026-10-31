@@ -61,6 +61,7 @@ import {
   resolveQuoteTarget,
 } from "./quote.js";
 import { CLAUDE_CONFIG_FILE, ensureBypassAccepted } from "./claude-config.js";
+import { wechatToolsAllowed } from "./claude-settings.js";
 import { type Lang, formatAgo, getLang, marker, t } from "./i18n.js";
 import { checkForUpdate } from "./version.js";
 import { claudeRecordsForSessions } from "./claude-sessions.js";
@@ -755,9 +756,11 @@ function handleRunCommand(
     m.runStarted(
       path.basename(cwd),
       task,
-      skip ? m.permSkip : m.permSafe,
+      skip ? m.permSkip : m.permAuto,
       sessionName
-    ) + (bypass === "accepted" ? `\n\n${m.bypassAutoAccepted}` : "")
+    ) +
+      (bypass === "accepted" ? `\n\n${m.bypassAutoAccepted}` : "") +
+      (!skip && !wechatToolsAllowed() ? `\n\n${m.runAllowMissing}` : "")
   );
 }
 

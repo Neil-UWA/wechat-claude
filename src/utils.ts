@@ -55,18 +55,20 @@ export function imageExtension(buf: Buffer): string {
 // Parse leading flags of a "/run" argument string.
 // Tasks run in auto mode by default (a classifier reviews each action and
 // blocks risky ones); "-y" / "--yes" opt into skipping permissions entirely.
-// "--safe", which selected auto mode while skipping was the default, is still
-// accepted and changes nothing.
+// "--safe" (acceptEdits, back when skipping was the default) still parses, and
+// asks for the stricter choice: it wins over -y wherever it appears.
 export function parseRunFlags(args: string): { skip: boolean; rest: string } {
   let skip = false;
+  let safe = false;
   let rest = args.trim();
   while (true) {
     const m = rest.match(/^(-y|--yes|--safe)(?:\s+|$)/);
     if (!m) break;
-    if (m[1] !== "--safe") skip = true;
+    if (m[1] === "--safe") safe = true;
+    else skip = true;
     rest = rest.slice(m[0].length).trim();
   }
-  return { skip, rest };
+  return { skip: skip && !safe, rest };
 }
 
 // Build the prompt for a remotely-launched Claude session so the result

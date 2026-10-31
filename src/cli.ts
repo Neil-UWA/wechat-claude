@@ -353,14 +353,14 @@ async function main(): Promise<void> {
   switch (cmd) {
     case "setup": {
       out("Setting up wechat-claude…\n");
-      configure();
+      const configured = configure();
       out("");
       const ok = await login();
       out("");
       if (ok) {
         const started = await restartDaemonForNewLogin(out);
         out("");
-        out("Setup complete. Next step:");
+        out(configured ? "Setup complete. Next step:" : "Logged in. Next step:");
         out("  In a Claude Code session, type: /wechat");
         if (started && !launchd.isInstalled()) {
           out("");
@@ -369,6 +369,11 @@ async function main(): Promise<void> {
         }
       } else {
         out("Setup finished with login pending — run `wechat-claude login` to retry.");
+      }
+      if (!configured) {
+        out("");
+        out("Some steps above failed (marked !). Fix them, then run: wechat-claude configure");
+        process.exitCode = 1;
       }
       break;
     }

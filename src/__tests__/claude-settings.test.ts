@@ -8,6 +8,7 @@ import {
   installWechatSettings,
   removeRenameHook,
   renameHookCommand,
+  wechatToolsAllowed,
 } from "../claude-settings.js";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wc-claude-settings-"));
@@ -172,5 +173,13 @@ describe("installWechatSettings", () => {
     expect(fs.readFileSync(FILE, "utf-8")).toBe("{ nope");
     fs.writeFileSync(FILE, JSON.stringify({ permissions: { allow: "everything" } }));
     expect(installWechatSettings(FILE)).toBeNull();
+  });
+
+  it("reports whether the allow rule is in place", () => {
+    expect(wechatToolsAllowed(FILE)).toBe(false);
+    fs.writeFileSync(FILE, JSON.stringify({ permissions: { allow: ["Bash(ls)"] } }));
+    expect(wechatToolsAllowed(FILE)).toBe(false);
+    installWechatSettings(FILE);
+    expect(wechatToolsAllowed(FILE)).toBe(true);
   });
 });

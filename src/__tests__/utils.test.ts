@@ -150,9 +150,10 @@ describe("parseRunFlags", () => {
     expect(parseRunFlags("--yes 修复 bug")).toEqual({ skip: true, rest: "修复 bug" });
   });
 
-  it("--safe is still accepted and changes nothing", () => {
+  it("--safe is still accepted, and wins over -y", () => {
     expect(parseRunFlags("--safe 修复 bug")).toEqual({ skip: false, rest: "修复 bug" });
-    expect(parseRunFlags("--safe -y 修复 bug")).toEqual({ skip: true, rest: "修复 bug" });
+    expect(parseRunFlags("--safe -y 修复 bug")).toEqual({ skip: false, rest: "修复 bug" });
+    expect(parseRunFlags("-y --safe 修复 bug")).toEqual({ skip: false, rest: "修复 bug" });
   });
 
   it("bare flag leaves empty rest", () => {

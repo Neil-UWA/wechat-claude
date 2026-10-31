@@ -7,7 +7,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 // The file a path finally names, following symlinks even when the last one
-// dangles (realpath fails on those). Null on a loop (or an absurdly long
+// dangles (realpath fails on those). A relative link is resolved against the
+// real directory holding it, so a symlinked parent doesn't send ".." to the
+// wrong place. Null on a loop (or an absurdly long
 // chain): falling back to the path itself would rename over the link.
 function resolveLinks(file: string): string | null {
   try {
@@ -21,21 +23,33 @@ function resolveLinks(file: string): string | null {
     } catch {
       return p;
     }
-    p = path.resolve(path.dirname(p), link);
+    let dir = path.dirname(p);
+    try {
+      dir = fs.realpathSync(dir);
+    } catch {}
+    p = path.resolve(dir, link);
   }
+  return null;
+}
+
+function parseObject(text: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
+      return parsed as Record<string, unknown>;
+  } catch {}
   return null;
 }
 
 // The file's top-level object, or null when it is missing, unreadable, not
 // JSON, or not an object. Callers that must tell "missing" from "corrupt"
-// check existence first: writing over a corrupt file loses whatever it held.
+// use readJsonObjectOrEmpty: writing over a corrupt file loses what it held.
 export function readJsonObject(file: string): Record<string, unknown> | null {
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf-8"));
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
-      return parsed as Record<string, unknown>;
-  } catch {}
-  return null;
+    return parseObject(fs.readFileSync(file, "utf-8"));
+  } catch {
+    return null;
+  }
 }
 
 // As readJsonObject, but a missing file reads as {} — told apart from a
@@ -49,12 +63,7 @@ export function readJsonObjectOrEmpty(file: string): Record<string, unknown> | n
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === "ENOENT" ? {} : null;
   }
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
-      return parsed as Record<string, unknown>;
-  } catch {}
-  return null;
+  return parseObject(text);
 }
 
 // Replace `file` with `value`, all at once or not at all. Returns false, with

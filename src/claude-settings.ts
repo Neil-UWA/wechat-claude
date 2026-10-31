@@ -2,7 +2,6 @@
 // touches for three things: the hook that lets `/wechat <name>` rename the
 // session (see rename-hook.ts), an allow rule for its tools, and
 // accepting messages from the user's other Claude sessions.
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { readJsonObject, readJsonObjectOrEmpty, writeJsonAtomic } from "./json-file.js";
@@ -101,7 +100,6 @@ export function installRenameHook(
 export type HookRemoveResult = "removed" | "absent" | "failed";
 
 export function removeRenameHook(file = CLAUDE_SETTINGS_FILE): HookRemoveResult {
-  if (!fs.existsSync(file)) return "absent";
   const loaded = load(file);
   if (!loaded) return "failed";
   const { settings, groups } = loaded;
@@ -175,4 +173,12 @@ export function installWechatSettings(
     WECHAT_ALLOW_RULES.every((r) => afterAllow.includes(r)) &&
     (crossSession !== "set" || after?.[CROSS_SESSION_KEY] === "accept");
   return ok ? { added, crossSession } : null;
+}
+
+// Whether the allow rule installWechatSettings writes is in place. A /run task
+// reports back through wechat_send_text; without the rule, auto mode sends
+// that call to the classifier, which can refuse it.
+export function wechatToolsAllowed(file = CLAUDE_SETTINGS_FILE): boolean {
+  const allow = (readJsonObject(file)?.permissions as Record<string, unknown> | undefined)?.allow;
+  return Array.isArray(allow) && WECHAT_ALLOW_RULES.every((r) => allow.includes(r));
 }

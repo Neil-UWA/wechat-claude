@@ -67,6 +67,19 @@ describe("writeJsonAtomic", () => {
     expect(readJsonObject(real)).toEqual({ a: 1 });
   });
 
+  it("resolves a dangling relative link against its real directory", () => {
+    // parent-link -> real/parent; parent-link/settings.json -> ../dots/settings.json
+    // means real/dots/settings.json, not <dir>/dots/settings.json.
+    const realParent = path.join(dir, "real", "parent");
+    fs.mkdirSync(realParent, { recursive: true });
+    const parentLink = path.join(dir, "parent-link");
+    fs.symlinkSync(realParent, parentLink);
+    fs.symlinkSync(path.join("..", "dots", "settings.json"), path.join(realParent, "settings.json"));
+    expect(writeJsonAtomic(path.join(parentLink, "settings.json"), { a: 1 })).toBe(true);
+    expect(readJsonObject(path.join(dir, "real", "dots", "settings.json"))).toEqual({ a: 1 });
+    expect(fs.existsSync(path.join(dir, "dots"))).toBe(false);
+  });
+
   it("refuses a symlink loop rather than renaming over the link", () => {
     const a = path.join(dir, "loop-a.json");
     const b = path.join(dir, "loop-b.json");

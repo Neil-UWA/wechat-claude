@@ -106,7 +106,8 @@ type Msgs = {
   bypassAutoAccepted: string;
   bypassUnavailable: (configFile: string) => string;
   permSkip: string;
-  permSafe: string;
+  permAuto: string;
+  runAllowMissing: string;
   // /runs, /stop
   runsNone: string;
   runsList: (count: number, body: string) => string;
@@ -248,7 +249,9 @@ const zh: Msgs = {
   bypassUnavailable: (configFile) =>
     `无法启动任务: 读写 ${configFile} 失败，没能确认免确认模式已开启。直接启动会永久卡在确认对话框上，所以取消了。\n\n解决办法: 在电脑上运行一次 claude --dangerously-skip-permissions 并接受，或去掉 -y 用 auto 模式运行。`,
   permSkip: "跳过确认 (-y)",
-  permSafe: "auto 模式（默认）",
+  permAuto: "auto 模式（默认）",
+  runAllowMissing:
+    "提示: ~/.claude/settings.json 里还没有放行微信工具的规则，auto 模式下任务发回结果时可能被分类器拦下。在电脑上运行一次 wechat-claude configure 即可。",
   runsNone: "当前没有 /run 启动的任务 session。",
   runsList: (count, body) =>
     `运行中的任务 (${count}):\n\n${body}\n\n/stop <编号|名称> 终止，/stop all 全部终止\n电脑上: tmux attach -t <名称>`,
@@ -400,7 +403,9 @@ const en: Msgs = {
   bypassUnavailable: (configFile) =>
     `Cannot start the task: ${configFile} could not be read or written, so skip-permissions mode is not confirmed as accepted. Launching anyway would hang on the consent dialog forever, so the run was cancelled.\n\nFix: run claude --dangerously-skip-permissions once at the computer and accept it, or drop -y to run in auto mode.`,
   permSkip: "skip confirmations (-y)",
-  permSafe: "auto mode (default)",
+  permAuto: "auto mode (default)",
+  runAllowMissing:
+    "Note: ~/.claude/settings.json has no allow rule for the WeChat tools yet, so in auto mode the classifier may block the task from sending its result back. Run wechat-claude configure once at the computer.",
   runsNone: "No /run task sessions right now.",
   runsList: (count, body) =>
     `Running tasks (${count}):\n\n${body}\n\n/stop <number|name> to stop, /stop all for all\nAt the computer: tmux attach -t <name>`,
