@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // wechat-claude CLI: one-command setup, login, status, and daemon control.
 //
-//   wechat-claude setup            register MCP server + slash command, then login
+//   wechat-claude setup            configure, then login
+//   wechat-claude configure        register MCP server, slash command, hook, settings
 //   wechat-claude login            (re)authenticate by scanning a QR code
 //   wechat-claude status           show daemon / login state
 //   wechat-claude daemon [cmd]     run or manage the background daemon
@@ -23,7 +24,12 @@ import {
   stopDaemon,
 } from "./daemon-control.js";
 import { type McpRegistration, classifyMcpRegistration } from "./utils.js";
-import { installRenameHook, removeRenameHook, renameHookCommand } from "./claude-settings.js";
+import {
+  installRenameHook,
+  installWechatSettings,
+  removeRenameHook,
+  renameHookCommand,
+} from "./claude-settings.js";
 import * as launchd from "./launchd.js";
 
 const SERVER_JS = fileURLToPath(new URL("./server.js", import.meta.url));
@@ -58,7 +64,7 @@ function mcpRegistration(): McpRegistration {
   return classifyMcpRegistration(stdout, SERVER_JS);
 }
 
-function registerMcpServer(): void {
+function registerMcpServer(): boolean {
   out(`→ Registering MCP server (claude mcp add ${MCP_NAME})…`);
 
   // `claude mcp add` refuses a name that already exists — and exits 0 while
@@ -88,9 +94,10 @@ function registerMcpServer(): void {
     out(`  ! still registered to ${registered.target ?? "another install"}, not this install`);
     out(`    Fix it with: claude mcp remove --scope user ${MCP_NAME}`);
   }
+  return registered.kind === "current";
 }
 
-function installSlashCommand(): void {
+function installSlashCommand(): boolean {
   const src = pkgFile("wechat.md");
   const destDir = path.join(os.homedir(), ".claude", "commands");
   const dest = path.join(destDir, "wechat.md");
@@ -98,13 +105,15 @@ function installSlashCommand(): void {
     fs.mkdirSync(destDir, { recursive: true });
     fs.copyFileSync(src, dest);
     out(`  ✓ /wechat command installed to ${dest}`);
+    return true;
   } catch (err) {
     out(`  ! could not install /wechat command: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
   }
 }
 
 // Lets `/wechat <name>` rename the Claude Code session too (see rename-hook.ts).
-function installSessionRenameHook(): void {
+function installSessionRenameHook(): boolean {
   const command = renameHookCommand(RENAME_HOOK_JS);
   switch (installRenameHook(command)) {
     case "installed":
@@ -119,8 +128,44 @@ function installSessionRenameHook(): void {
     case "failed":
       out("  ! could not update ~/.claude/settings.json — /wechat <name> will not rename the Claude Code session");
       out(`    Add a UserPromptSubmit hook running: ${command}`);
-      break;
+      return false;
   }
+  return true;
+}
+
+// Lets a monitoring session work unattended: its WeChat tools skip the auto
+// mode classifier, and messages relayed from another session are delivered
+// instead of held for a review nobody is there to do.
+function installUnattendedSettings(): boolean {
+  const r = installWechatSettings();
+  if (r === null) {
+    out("  ! could not update ~/.claude/settings.json — WeChat tools may be held by auto mode, and relayed messages held for review");
+    return false;
+  }
+  out(
+    r.added.length > 0
+      ? "  ✓ every WeChat tool (login and logout included) now runs without a permission check"
+      : "  ✓ WeChat tools already allowed"
+  );
+  if (r.crossSession === "set")
+    out('  ✓ crossSessionInbound set to "accept": messages from your other Claude sessions are delivered without review');
+  else if (r.crossSession === "kept")
+    out('  • crossSessionInbound left as you set it — messages relayed between sessions in different permission modes will wait for review');
+  return true;
+}
+
+// Everything setup does short of logging in, so an existing install can be
+// brought up to date without a QR scan — a new login would also invalidate
+// every reply token the old one handed out. False when any step failed; the
+// rest still run.
+function configure(): boolean {
+  const results = [
+    registerMcpServer(),
+    installSlashCommand(),
+    installSessionRenameHook(),
+    installUnattendedSettings(),
+  ];
+  return results.every(Boolean);
 }
 
 function removeSessionRenameHook(): number {
@@ -286,7 +331,9 @@ async function daemon(sub: string | undefined): Promise<number> {
 function usage(): void {
   out("wechat-claude — control Claude Code from WeChat\n");
   out("Usage:");
-  out("  wechat-claude setup              register MCP server + /wechat command, then log in");
+  out("  wechat-claude setup              configure (below), then log in");
+  out("  wechat-claude configure          register MCP server, /wechat command and its hook, allow the");
+  out("                                   WeChat tools in auto mode, accept relayed session messages");
   out("  wechat-claude login              (re)authenticate by scanning a QR code");
   out("  wechat-claude status             show daemon / login state");
   out("  wechat-claude daemon             run the daemon in the foreground");
@@ -306,16 +353,14 @@ async function main(): Promise<void> {
   switch (cmd) {
     case "setup": {
       out("Setting up wechat-claude…\n");
-      registerMcpServer();
-      installSlashCommand();
-      installSessionRenameHook();
+      const configured = configure();
       out("");
       const ok = await login();
       out("");
       if (ok) {
         const started = await restartDaemonForNewLogin(out);
         out("");
-        out("Setup complete. Next step:");
+        out(configured ? "Setup complete. Next step:" : "Logged in. Next step:");
         out("  In a Claude Code session, type: /wechat");
         if (started && !launchd.isInstalled()) {
           out("");
@@ -324,6 +369,11 @@ async function main(): Promise<void> {
         }
       } else {
         out("Setup finished with login pending — run `wechat-claude login` to retry.");
+      }
+      if (!configured) {
+        out("");
+        out("Some steps above failed (marked !). Fix them, then run: wechat-claude configure");
+        process.exitCode = 1;
       }
       break;
     }
@@ -335,6 +385,10 @@ async function main(): Promise<void> {
       break;
     case "status":
       status();
+      break;
+    case "configure":
+      out("Configuring wechat-claude (no login)…\n");
+      if (!configure()) process.exitCode = 1;
       break;
     case "remove-hook":
       process.exitCode = removeSessionRenameHook();

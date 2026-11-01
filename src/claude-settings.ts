@@ -1,9 +1,10 @@
 // Claude Code's user settings (~/.claude/settings.json), which wechat-claude
-// only touches to register the hook that lets `/wechat <name>` rename the
-// session (see rename-hook.ts).
-import fs from "node:fs";
+// touches for three things: the hook that lets `/wechat <name>` rename the
+// session (see rename-hook.ts), an allow rule for its tools, and
+// accepting messages from the user's other Claude sessions.
 import os from "node:os";
 import path from "node:path";
+import { readJsonObject, readJsonObjectOrEmpty, writeJsonAtomic } from "./json-file.js";
 
 export const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), ".claude", "settings.json");
 
@@ -37,17 +38,8 @@ export function renameHookCommand(scriptPath: string): string {
 function load(
   file: string
 ): { settings: Record<string, unknown>; groups: unknown[] } | null {
-  let settings: Record<string, unknown> = {};
-  if (fs.existsSync(file)) {
-    try {
-      const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf-8"));
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-        return null;
-      settings = parsed as Record<string, unknown>;
-    } catch {
-      return null;
-    }
-  }
+  const settings = readJsonObjectOrEmpty(file);
+  if (settings === null) return null;
   const hooks = settings.hooks ?? {};
   if (typeof hooks !== "object" || hooks === null || Array.isArray(hooks)) return null;
   const groups = (hooks as Record<string, unknown>).UserPromptSubmit ?? [];
@@ -56,34 +48,29 @@ function load(
   return { settings, groups };
 }
 
-function save(file: string, settings: Record<string, unknown>): boolean {
-  // Write through a symlink, not over it: dotfile managers (stow, chezmoi,
-  // home-manager) link settings.json into a repo, and renaming onto the link
-  // would quietly detach it.
-  let target = file;
-  try {
-    target = fs.realpathSync(file);
-  } catch {}
-  // Temp file + rename: Claude Code reads this file live, and a partial write
-  // would cost the user every other setting in it.
-  const tmp = `${target}.wechat-claude.${process.pid}.tmp`;
-  try {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    const mode = fs.existsSync(target) ? fs.statSync(target).mode & 0o777 : 0o644;
-    fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n", { mode });
-    fs.renameSync(tmp, target);
-    return true;
-  } catch {
-    try {
-      fs.unlinkSync(tmp);
-    } catch {}
-    return false;
+// Our entries among the UserPromptSubmit groups, whatever their shape.
+function ourHooks(groups: unknown[]): HookCommand[] {
+  const out: HookCommand[] = [];
+  for (const g of groups as HookGroup[]) {
+    if (!Array.isArray(g?.hooks)) continue;
+    for (const h of g.hooks as unknown[]) if (isOurs(h)) out.push(h as HookCommand);
   }
+  return out;
+}
+
+// Our entries in the file as it now stands on disk, or null when it can't be
+// read — which must not pass for "none there". Claude Code writes this file
+// too and may have replaced it between our read and our rename, so a write is
+// only trusted once read back.
+function ourHooksOnDisk(file: string): HookCommand[] | null {
+  const loaded = load(file);
+  return loaded ? ourHooks(loaded.groups) : null;
 }
 
 // "already": an identical entry was there. "installed"/"updated": this call
 // added it or replaced one pointing at another install. "failed": the file is
-// corrupt or unwritable, and was left untouched.
+// corrupt or unwritable and was left untouched — or it was written, but
+// another writer replaced it before the entry could be confirmed there.
 export type HookInstallResult = "already" | "installed" | "updated" | "failed";
 
 export function installRenameHook(
@@ -94,24 +81,16 @@ export function installRenameHook(
   if (!loaded) return "failed";
   const { settings, groups } = loaded;
 
-  let found = false;
-  let replaced = false;
-  for (const g of groups as HookGroup[]) {
-    if (!Array.isArray(g?.hooks)) continue;
-    for (const h of g.hooks as unknown[]) {
-      if (!isOurs(h)) continue;
-      found = true;
-      if ((h as HookCommand).command !== command) {
-        (h as HookCommand).command = command;
-        replaced = true;
-      }
-    }
-  }
-  if (found && !replaced) return "already";
+  const ours = ourHooks(groups);
+  const found = ours.length > 0;
+  if (found && ours.every((h) => h.command === command)) return "already";
+  for (const h of ours) h.command = command;
   if (!found) groups.push({ hooks: [{ type: "command", command }] });
   (settings.hooks as Record<string, unknown>).UserPromptSubmit = groups;
 
-  if (!save(file, settings)) return "failed";
+  if (!writeJsonAtomic(file, settings)) return "failed";
+  const after = ourHooksOnDisk(file);
+  if (!after?.some((h) => h.command === command)) return "failed";
   return found ? "updated" : "installed";
 }
 
@@ -121,7 +100,6 @@ export function installRenameHook(
 export type HookRemoveResult = "removed" | "absent" | "failed";
 
 export function removeRenameHook(file = CLAUDE_SETTINGS_FILE): HookRemoveResult {
-  if (!fs.existsSync(file)) return "absent";
   const loaded = load(file);
   if (!loaded) return "failed";
   const { settings, groups } = loaded;
@@ -140,5 +118,67 @@ export function removeRenameHook(file = CLAUDE_SETTINGS_FILE): HookRemoveResult 
   const hooks = settings.hooks as Record<string, unknown>;
   if (kept.length > 0) hooks.UserPromptSubmit = kept;
   else delete hooks.UserPromptSubmit;
-  return save(file, settings) ? "removed" : "failed";
+  if (!writeJsonAtomic(file, settings)) return "failed";
+  return ourHooksOnDisk(file)?.length === 0 ? "removed" : "failed";
+}
+
+// Every tool of the wechat MCP server. In auto mode each call otherwise goes
+// to the classifier, and when the classifier can't answer ("gave no verdict")
+// the call is refused — a reply the user is waiting for simply doesn't go out,
+// and a login expiring while nobody is at the keyboard can't be renewed. A
+// server-wide rule rather than a list, so tools added later are covered too.
+export const WECHAT_ALLOW_RULES = ["mcp__wechat"];
+
+// Relaying a WeChat message to another session (SendMessage) is held for
+// manual review whenever the two sessions run in different permission modes —
+// and nobody is at the terminal to review it, which is the point of WeChat.
+// "accept" delivers them. It trusts every Claude session of this user on this
+// machine, so it is only set where the user has not chosen a value already.
+const CROSS_SESSION_KEY = "crossSessionInbound";
+
+export type WechatSettingsResult = {
+  added: string[]; // allow rules this call added
+  crossSession: "set" | "already" | "kept"; // "kept": the user chose another value
+} | null; // the file is corrupt, shaped unlike Claude Code's, or unwritable
+
+export function installWechatSettings(
+  file = CLAUDE_SETTINGS_FILE
+): WechatSettingsResult {
+  const settings = readJsonObjectOrEmpty(file);
+  if (settings === null) return null;
+  const permissions = settings.permissions ?? {};
+  if (typeof permissions !== "object" || permissions === null || Array.isArray(permissions))
+    return null;
+  const perms = permissions as Record<string, unknown>;
+  const allow = perms.allow ?? [];
+  if (!Array.isArray(allow)) return null;
+
+  const added = WECHAT_ALLOW_RULES.filter((r) => !allow.includes(r));
+  const current = settings[CROSS_SESSION_KEY];
+  const crossSession =
+    current === "accept" ? "already" : current === undefined ? "set" : "kept";
+  if (added.length === 0 && crossSession !== "set") return { added, crossSession };
+
+  perms.allow = [...allow, ...added];
+  settings.permissions = perms;
+  if (crossSession === "set") settings[CROSS_SESSION_KEY] = "accept";
+  if (!writeJsonAtomic(file, settings)) return null;
+
+  // Read back, as for the hook: Claude Code may have rewritten the file. This
+  // confirms our own change survived, not that the rest of the file did.
+  const after = readJsonObject(file);
+  const afterAllow = (after?.permissions as Record<string, unknown> | undefined)?.allow;
+  const ok =
+    Array.isArray(afterAllow) &&
+    WECHAT_ALLOW_RULES.every((r) => afterAllow.includes(r)) &&
+    (crossSession !== "set" || after?.[CROSS_SESSION_KEY] === "accept");
+  return ok ? { added, crossSession } : null;
+}
+
+// Whether the allow rule installWechatSettings writes is in place. A /run task
+// reports back through wechat_send_text; without the rule, auto mode sends
+// that call to the classifier, which can refuse it.
+export function wechatToolsAllowed(file = CLAUDE_SETTINGS_FILE): boolean {
+  const allow = (readJsonObject(file)?.permissions as Record<string, unknown> | undefined)?.allow;
+  return Array.isArray(allow) && WECHAT_ALLOW_RULES.every((r) => allow.includes(r));
 }

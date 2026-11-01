@@ -75,7 +75,7 @@ wechat-claude daemon           # 前台运行 / 交给你自己的进程管理�
 | `/s <名字> <消息>` | 按名字发消息（模糊匹配；有歧义时优先选正在监控的 / 最近活跃的） |
 | *（引用某条回复再打字）* | 在微信里**引用**某个 session 的回复然后直接写你要说的话，这条消息就会发给写那条回复的 session —— 不用 `/s`，也不用改绑定（见[引用回复](#引用回复)） |
 | `/s <pid> <消息>` | 按 pid 发消息（同名的会以 `名字#pid` 形式列出） |
-| `/run [--safe] [目录] <任务>` | 在 tmux 里起一个新的 Claude session 执行任务。被启动的 session 会被要求把结果发回微信。默认无人值守运行（`--dangerously-skip-permissions`）；加 `--safe` 则用 `--permission-mode acceptEdits`，此时 bash 命令会在电脑端等待确认。第一次无人值守运行时，会替你在 `~/.claude.json` 里接受免确认模式 —— detached 的 session 无法回答 Claude Code 的一次性对话框 —— 并在回复里说明；详见 [SECURITY.md](SECURITY.md) |
+| `/run [-y] [目录] <任务>` | 在 tmux 里起一个新的 Claude session 执行任务。被启动的 session 会被要求把结果发回微信。默认用 `--permission-mode auto`：常规操作自动执行，分类器判定有风险的操作会被拦下（auto 模式需要你的 Claude 账号支持）。若分类器连续拦截或出故障，Claude Code 会转为等待确认，任务就停在那里，用 `/runs` 查看。加 `-y` 则跳过所有权限确认（`--dangerously-skip-permissions`）；第一次这样运行时，会替你在 `~/.claude.json` 里接受免确认模式 —— detached 的 session 无法回答 Claude Code 的一次性对话框 —— 并在回复里说明；详见 [SECURITY.md](SECURITY.md) |
 | `/runs` | 列出运行中的 `/run` 任务 session |
 | `/stop <名字>` | 终止一个 `/run` 任务 session（名字以 `wc-` 开头） |
 | `/close <编号\|名字\|pid>` | 远程关闭一个 Claude session —— 终结它的 Claude 进程（以及 MCP server）并从列表移除。该 session 里未保存的工作会丢失。如果一个名字匹配到多个，会列出来而不是瞎猜；`/close <名字> all` 关闭全部匹配项，`/close idle` 清理所有闲置 2 小时以上且未被监控的 session。每次关闭的回复末尾都会附上剩余 session 概览 |
@@ -205,7 +205,8 @@ session 用 `SendMessage` 找它时要用的（见 `ListAgents`）。`wechat_sta
 ## CLI
 
 ```bash
-wechat-claude setup              # 注册 MCP server + /wechat 命令，然后登录
+wechat-claude setup              # configure，然后登录
+wechat-claude configure          # 注册 MCP server、/wechat 命令和改名 hook，写入下面「安全」里的两项设置；不登录
 wechat-claude login              # （重新）扫码认证
 wechat-claude status             # 查看登录 / daemon / 服务状态
 wechat-claude daemon             # 前台运行 daemon（跟着终端一起退出）
@@ -226,6 +227,7 @@ wechat-claude remove-hook        # 移除 /wechat 改名用的 hook（卸载前�
 
 ```bash
 npm install -g wechat-claude-sessions@latest
+wechat-claude configure          # 补上新版本带来的配置（不用重新扫码）
 wechat-claude daemon restart
 ```
 
@@ -324,10 +326,18 @@ wechat-claude 会响应聊天消息、在你的机器上执行代码。完整威
 [SECURITY.md](SECURITY.md)。简而言之：
 
 - 只有扫码登录的那个账号能给机器人发消息；它不会被公开检索到，（目前）也不能被拉进群聊。
-- `/run` 默认无人值守运行（`--dangerously-skip-permissions`）；用
-  `/run --safe <任务>` 可以让 bash 命令需要确认。
+- `/run` 默认用 auto 模式，危险操作会被分类器拦下；`/run -y <任务>` 跳过所有权限确认
+  （`--dangerously-skip-permissions`）。
 - 机器人 token 存在 `~/.claude/wechat/session.json`（0600），整个数据目录是 0700。
   只在你自己掌控的机器上运行。
+- `setup` / `configure` 会改 `~/.claude/settings.json` 里的两处，好让 session 在你不在
+  电脑旁时也能干活：
+  - `permissions.allow` 加上 `mcp__wechat`，即 wechat MCP 的全部工具（含 `wechat_login` /
+    `wechat_logout`）。auto 模式下这些调用不再经过分类器 —— 分类器一出故障（"gave no
+    verdict"），回复就发不出去。
+  - `crossSessionInbound` 设为 `"accept"`（只在你没设过时）。转给另一个 session 的微信消息，
+    若两个 session 权限模式不同，默认会被扣下等人工审核，而你人不在电脑旁。代价是：本机你
+    自己的任何 Claude session 发来的消息都会直接送达，不再审核。不想要就删掉这一项。
 
 ## 故障排查
 

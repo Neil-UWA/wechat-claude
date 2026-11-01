@@ -13,18 +13,19 @@ Key facts to understand:
   currently no per-sender authorization check — every incoming WeChat message
   is acted on. Only enable the bot for an account that only you can message,
   and never share or publicize the bot.
-- **`/run` defaults to `--dangerously-skip-permissions`.** Tasks run
-  unattended without per-action confirmation. Use `/run --safe <task>` for
-  `--permission-mode acceptEdits` (bash commands then wait for confirmation at
-  the computer).
-- **The first such `/run` accepts skip-permissions mode on your behalf.**
+- **`/run` defaults to `--permission-mode auto`.** A classifier reviews each
+  action and blocks risky ones (auto mode must be available on your Claude
+  account). Repeated blocks or a classifier failure make Claude Code fall back
+  to asking, and the detached task then waits for an answer. `/run -y <task>`
+  uses `--dangerously-skip-permissions`: no review at all.
+- **The first `/run -y` accepts skip-permissions mode on your behalf.**
   Claude Code gates that mode behind a one-time interactive dialog, which a
   detached tmux session can never answer — the task would hang on the prompt
   forever. So the daemon sets `bypassPermissionsModeAccepted` in
   `~/.claude.json` before launching, and says so in its reply the one time it
   does. If you would rather grant that yourself, accept the dialog once by
   running `claude --dangerously-skip-permissions` at the computer, or stay on
-  `/run --safe`, which never touches the flag.
+  plain `/run`, which never touches the flag.
 - **The bot token is stored at `~/.claude/wechat/session.json`** (mode 0600).
   The whole `~/.claude/wechat/` directory is created 0700. Anyone with read
   access to your home directory can impersonate your bot.
@@ -34,7 +35,7 @@ Key facts to understand:
 ## Recommended hardening
 
 - Keep the bot conversation private (a single-user chat).
-- Prefer `/run --safe` unless you are actively watching the task.
+- Use `/run -y` only when you are actively watching the task.
 - Review `~/.claude/wechat/config.json` `repoDirs` — only list directories you
   are comfortable running tasks in.
 
