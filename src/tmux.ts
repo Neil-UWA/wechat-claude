@@ -48,6 +48,38 @@ export function newTmuxSession(
   return null;
 }
 
+// The pane id ("%12") at the end of a target as Claude Code records it
+// ("<session>:@<window>.%<pane>"). Pane ids are unique on a tmux server,
+// whatever the session is called; undefined when there is none.
+export function paneIdOf(target: string): string | undefined {
+  return target.match(/(%\d+)$/)?.[1];
+}
+
+// The pid of the process a pane was started with, or undefined when the pane
+// does not exist on this tmux server.
+export function panePid(paneId: string): number | undefined {
+  const r = spawnSync("tmux", ["display-message", "-p", "-t", paneId, "#{pane_pid}"], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (r.status !== 0 || !r.stdout) return undefined;
+  const pid = parseInt(r.stdout.toString().trim(), 10);
+  return Number.isFinite(pid) && pid > 0 ? pid : undefined;
+}
+
+// Type `text` into a pane and press Enter. -l sends the text literally, so
+// nothing in it is read as a key name.
+export function typeIntoPane(paneId: string, text: string): string | null {
+  for (const args of [
+    ["send-keys", "-t", paneId, "-l", text],
+    ["send-keys", "-t", paneId, "Enter"],
+  ]) {
+    const r = spawnSync("tmux", args, { stdio: "ignore" });
+    if (r.error) return String(r.error);
+    if (r.status !== 0) return `tmux exited with ${r.status}`;
+  }
+  return null;
+}
+
 // A tmux session name safe to embed and to hand back to the user: no shell
 // metacharacters, no spaces.
 export function isSafeSessionName(name: string): boolean {

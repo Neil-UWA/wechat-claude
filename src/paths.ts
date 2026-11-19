@@ -29,6 +29,9 @@ export const OUTBOX_FILE = path.join(WECHAT_DIR, "outbox.json");
 // Drop a file here to make a session's watcher re-announce its pending inbox
 // (used after a usage limit lifts, when the original announcement is long gone).
 export const NUDGE_DIR = path.join(WECHAT_DIR, "nudge");
+// One file per session the daemon wants WeChat attached to, for the hook in
+// that session to pick up (see attach.ts).
+export const ATTACH_DIR = path.join(WECHAT_DIR, "attach");
 export const USAGE_STATE_FILE = path.join(WECHAT_DIR, "usage-limit.json");
 // Last answer from the npm registry about the newest published version, so
 // /sessions can mention an available update without asking npm every time.
@@ -45,6 +48,7 @@ export function ensureDirs(extra: string[] = []): void {
     TYPING_DIR,
     REPLIES_DIR,
     NUDGE_DIR,
+    ATTACH_DIR,
     ...extra,
   ]) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });

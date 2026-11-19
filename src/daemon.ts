@@ -14,6 +14,7 @@ import {
   getBinding,
   setBinding,
 } from "./bindings.js";
+import { attachSession } from "./attach.js";
 import { clearHeartbeat, isMonitoring } from "./monitoring.js";
 import { nudgeSession } from "./nudge.js";
 import { lastReplyAt, pruneReplies } from "./replies.js";
@@ -775,6 +776,36 @@ function noteUsageLimit(client: ILinkClient, userId: string): void {
     .catch((err) => log(`Usage-limit note failed: ${err}`));
 }
 
+// A message just landed in a session that may not be running a watcher: get
+// WeChat attached to it rather than only warning that nobody will read it.
+// `unattachedWarn` is the old warning, still owed when attaching is off or
+// impossible.
+function attachOnDelivery(
+  target: SessionInfo,
+  unattachedWarn: string,
+  sendReply: (reply: string) => void
+): void {
+  const m = t();
+  const outcome = attachSession(target);
+  switch (outcome.kind) {
+    case "monitoring":
+    case "pending":
+      return;
+    case "typed":
+      log(`Auto-attach: typed /wechat into tmux pane ${outcome.pane} of ${target.name} (${target.id})`);
+      sendReply(m.attachTyped(target.name));
+      return;
+    case "requested":
+      log(`Auto-attach: left an attach request for ${target.name} (${target.id})`);
+      sendReply(m.attachRequested(target.name));
+      return;
+    case "disabled":
+    case "unreachable":
+      sendReply(unattachedWarn);
+      return;
+  }
+}
+
 function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   const text = msg.text.trim();
   const lang = getLang();
@@ -1101,9 +1132,7 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     const routed: PendingMessage = { ...msg, text: withQuote(message) };
     writeToInbox(target.id, routed);
     trackDelivery(routed, target.id, target.name);
-    if (!isMonitoring(target.id)) {
-      sendReply(m.deliveredUnmonitored(target.name));
-    }
+    attachOnDelivery(target, m.deliveredUnmonitored(target.name), sendReply);
     noteUsageLimit(client, msg.fromUserId);
     markTyping(msg.fromUserId);
     client.startTypingKeepAlive(msg.fromUserId, () => isTypingActive(msg.fromUserId));
@@ -1144,15 +1173,13 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   const delivered: PendingMessage = { ...msg, text: withQuote(msg.text) };
   writeToInbox(target.id, delivered);
   trackDelivery(delivered, target.id, target.name);
-  if (!isMonitoring(target.id)) {
-    // A quote picked this session out, so the honest warning is about that one
-    // session, not about nobody monitoring anything.
-    sendReply(
-      quoted
-        ? m.deliveredUnmonitored(target.name)
-        : m.deliveredNoneMonitored(target.name)
-    );
-  }
+  // A quote picked this session out, so the honest warning is about that one
+  // session, not about nobody monitoring anything.
+  attachOnDelivery(
+    target,
+    quoted ? m.deliveredUnmonitored(target.name) : m.deliveredNoneMonitored(target.name),
+    sendReply
+  );
   noteUsageLimit(client, msg.fromUserId);
   markTyping(msg.fromUserId);
   client.startTypingKeepAlive(msg.fromUserId);

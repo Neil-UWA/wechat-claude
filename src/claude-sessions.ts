@@ -26,6 +26,12 @@ export type ClaudeSessionRecord = {
   name: string;
   sessionId?: string;
   cwd?: string;
+  // "<session>:@<window>.%<pane>" when the session runs inside tmux — the one
+  // place keystrokes can be delivered to it from outside (see attach.ts).
+  tmux?: string;
+  // Claude Code's own activity state: "idle" (waiting at the prompt), "busy",
+  // "waiting" (a dialog is open), among others.
+  status?: string;
 };
 
 export function readClaudeSession(
@@ -49,6 +55,8 @@ export function readClaudeSession(
     name: rec.name,
     sessionId: typeof rec.sessionId === "string" ? rec.sessionId : undefined,
     cwd: typeof rec.cwd === "string" ? rec.cwd : undefined,
+    tmux: typeof rec.tmux === "string" && rec.tmux !== "" ? rec.tmux : undefined,
+    status: typeof rec.status === "string" ? rec.status : undefined,
   };
 }
 
