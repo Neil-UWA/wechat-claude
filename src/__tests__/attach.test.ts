@@ -31,9 +31,11 @@ const session: SessionInfo = {
 function deps(over: Partial<AttachDeps> = {}): AttachDeps & {
   typed: string[];
   requests: AttachRequest[];
+  relayed: string[];
 } {
   const typed: string[] = [];
   const requests: AttachRequest[] = [];
+  const relayed: string[] = [];
   return {
     enabled: () => true,
     isMonitoring: () => false,
@@ -43,11 +45,16 @@ function deps(over: Partial<AttachDeps> = {}): AttachDeps & {
       typed.push(`${pane} ${text}`);
       return null;
     },
+    relay: async (socket) => {
+      relayed.push(socket);
+      return true;
+    },
     writeRequest: (r) => requests.push(r),
     now: () => 1_000_000,
     attempts: new Map(),
     typed,
     requests,
+    relayed,
     ...over,
   };
 }
@@ -79,6 +86,37 @@ describe("attachSession", () => {
     expect(d.requests).toEqual([
       { sessionId: "4242", claudePid: 4000, name: "api", requestedAt: 1_000_000 },
     ]);
+  });
+
+  it("relays through the session's messaging socket when it can't be typed into", async () => {
+    const d = deps({
+      readRecord: (pid) => ({ pid, name: "api-3e", status: "idle", messagingSocketPath: "/tmp/cc-socks/4000.sock" }),
+    });
+    const outcome = attachSession(session, d);
+    expect(outcome.kind).toBe("relaying");
+    if (outcome.kind !== "relaying") return;
+    expect(await outcome.done).toBe(true);
+    expect(d.relayed).toEqual(["/tmp/cc-socks/4000.sock"]);
+    expect(d.requests).toEqual([]);
+  });
+
+  it("falls back to a request for the hook when the relay fails", async () => {
+    const d = deps({
+      readRecord: (pid) => ({ pid, name: "api-3e", status: "busy", messagingSocketPath: "/tmp/cc-socks/4000.sock" }),
+      relay: async () => false,
+    });
+    const outcome = attachSession(session, d);
+    if (outcome.kind !== "relaying") throw new Error(outcome.kind);
+    expect(await outcome.done).toBe(false);
+    expect(d.requests).toHaveLength(1);
+  });
+
+  it("never relays to a socket path that isn't one", () => {
+    const d = deps({
+      readRecord: (pid) => ({ pid, name: "x", status: "idle", messagingSocketPath: '/tmp/a.sock" and also' }),
+    });
+    expect(attachSession(session, d)).toEqual({ kind: "requested" });
+    expect(d.relayed).toEqual([]);
   });
 
   it("falls back to a request when typing into the pane fails", () => {

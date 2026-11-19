@@ -795,6 +795,17 @@ function attachOnDelivery(
       log(`Auto-attach: typed /wechat into tmux pane ${outcome.pane} of ${target.name} (${target.id})`);
       sendReply(m.attachTyped(target.name));
       return;
+    case "relaying":
+      log(`Auto-attach: relaying an attach message to ${target.name} (${target.id})`);
+      sendReply(m.attachRelaying(target.name));
+      void outcome.done.then((ok) =>
+        log(
+          ok
+            ? `Auto-attach: relay to ${target.name} delivered`
+            : `Auto-attach: relay to ${target.name} failed; left an attach request instead`
+        )
+      );
+      return;
     case "requested":
       log(`Auto-attach: left an attach request for ${target.name} (${target.id})`);
       sendReply(m.attachRequested(target.name));

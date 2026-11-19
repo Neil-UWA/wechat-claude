@@ -312,20 +312,26 @@ When a message goes to a session that has **not** run `/wechat` — by `/s`, a
 to it for you, so you don't have to go back to that terminal and type `/wechat`:
 
 - **The session runs in tmux and sits idle at its prompt**: the daemon types
-  `/wechat` and Enter into its pane; it attaches within seconds. Only when idle —
-  with a permission dialog open, the Enter would answer the dialog. The daemon
-  also checks the pane really runs that Claude process, so it never types into
-  the wrong one.
-- **Anything else** (not in tmux, or busy): the daemon leaves an attach request
-  that the hook `wechat-claude setup` installs (`PostToolUse` + `Stop`) picks up
-  inside that session: a busy session is told to attach at its next tool call,
-  one finishing its turn attaches before it stops.
+  `/wechat` and Enter into its pane; it attaches within seconds and costs no
+  quota. Only when idle — with a permission dialog open, the Enter would answer
+  the dialog. The daemon also checks the pane really runs that Claude process,
+  so it never types into the wrong one.
+- **Anything else** (not in tmux, or busy): the daemon starts a short headless
+  `claude -p` (Haiku, allowed only the `SendMessage` tool, no MCP servers loaded)
+  that tells the session to attach over Claude Code's own cross-session
+  messaging. It wakes idle sessions too; about 20 seconds and a few cents each.
+  It is addressed by the session's messaging socket, not its name, so duplicate
+  names can't misroute it.
+- **Fallback**: if that relay fails (no `claude` binary, usage limit reached,
+  …), the daemon leaves an attach request for the hook `wechat-claude setup`
+  installs (`PostToolUse` + `Stop`): the session is told to attach at its next
+  tool call or before it stops.
 
-Claude Code has no supported way to hand an interactive session a prompt from
-outside, so **an idle session outside tmux attaches only the next time it does
-anything**; the daemon's reply says which case applied. A session is not
-triggered twice within 2 minutes. To turn this off and get just the warning,
-add `"autoAttach": false` to `~/.claude/wechat/config.json`.
+The daemon's reply says which route was taken. A session is not triggered twice
+within 2 minutes. To turn this off and get just the warning, add
+`"autoAttach": false` to `~/.claude/wechat/config.json`. The relay needs
+`crossSessionInbound` set to `"accept"` (`setup` sets it); otherwise its message
+waits for review.
 
 ## Quoted replies
 

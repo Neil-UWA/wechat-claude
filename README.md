@@ -272,16 +272,19 @@ session 发到微信的每条回复（`wechat_send_text`，以及 `wechat_send_i
 daemon 会替你把微信挂上，不用再回到那个终端手动敲 `/wechat`：
 
 - **session 在 tmux 里、且正空闲在输入框**：daemon 直接往它的 tmux pane 里敲 `/wechat`
-  并回车，几秒内就挂上。只在空闲时才敲 —— 弹着权限确认框时回车会被当成"确认"。daemon
-  还会核对这个 pane 确实跑着那个 Claude 进程，不会敲错窗口。
-- **其它情况**（不在 tmux 里，或正在干活）：daemon 留一个挂载请求，由 `wechat-claude setup`
-  装的 hook（`PostToolUse` + `Stop`）在那个 session 里接手：正在干活的 session 下一次调用
-  工具时就会被要求先挂上微信；刚干完活的 session 会在停下前挂上。
+  并回车，几秒内就挂上，不花额度。只在空闲时才敲 —— 弹着权限确认框时回车会被当成"确认"。
+  daemon 还会核对这个 pane 确实跑着那个 Claude 进程，不会敲错窗口。
+- **其它情况**（不在 tmux 里，或正在干活）：daemon 起一个后台的非交互 `claude -p`（Haiku，
+  只允许 `SendMessage` 一个工具，不加载任何 MCP server），用 Claude Code 自己的跨 session
+  消息通道通知那个 session 挂上微信。闲着的 session 也会被唤醒，约 20 秒，每次大约几美分。
+  按 session 的消息 socket 寻址，不按名字，重名也不会发错。
+- **兜底**：通知没发出去（找不到 `claude`、额度用完等）时，daemon 留一个挂载请求，由
+  `wechat-claude setup` 装的 hook（`PostToolUse` + `Stop`）在那个 session 里接手：它下一次
+  调用工具、或干完活要停下时会被要求先挂上。
 
-Claude Code 没有从外部给一个交互式 session 发指令的正式接口，所以**一个闲着且不在 tmux 里
-的 session 只能等它下次有动作时才挂上**；daemon 的回复会说明是哪种情况。2 分钟内同一个
-session 不会重复触发。不想要的话在 `~/.claude/wechat/config.json` 里加
-`"autoAttach": false`，恢复为只发警告。
+daemon 的回复会说明走的是哪条路。2 分钟内同一个 session 不会重复触发。不想要的话在
+`~/.claude/wechat/config.json` 里加 `"autoAttach": false`，恢复为只发警告。后台通知要求
+`crossSessionInbound` 为 `"accept"`（`setup` 会设置），否则消息会等人工审核。
 
 ## 引用回复
 

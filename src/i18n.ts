@@ -75,6 +75,7 @@ type Msgs = {
   deliveredNoneMonitored: (name: string) => string;
   attachTyped: (name: string) => string;
   attachRequested: (name: string) => string;
+  attachRelaying: (name: string) => string;
   bindingCleared: string;
   // quoted ("引用") replies
   quoteSessionGone: (name: string) => string;
@@ -228,6 +229,8 @@ const zh: Msgs = {
     `已投递到 "${name}"，但当前没有任何 session 在监控消息（需要在 Claude Code 中运行 /wechat），可能不会及时处理。`,
   attachTyped: (name) =>
     `已投递到 "${name}"。它之前没开微信监控，已自动在它的终端里运行 /wechat 挂上，稍等片刻就会处理。`,
+  attachRelaying: (name) =>
+    `已投递到 "${name}"。它之前没开微信监控，已让一个后台 Claude 通知它挂上（约 20 秒）。`,
   attachRequested: (name) =>
     `已投递到 "${name}"。它之前没开微信监控，已请求它自动挂上：正在工作的 session 会在下一步就挂上；如果它正闲着（且不在 tmux 里），要等它下次有动作时才会挂上。`,
   bindingCleared: "绑定的 session 已关闭，已自动解除绑定，本条消息按默认路由投递。",
@@ -385,6 +388,8 @@ const en: Msgs = {
     `Delivered to "${name}", but no session is monitoring messages (run /wechat in a Claude Code session), so it may not be handled promptly.`,
   attachTyped: (name) =>
     `Delivered to "${name}". It wasn't monitoring WeChat, so /wechat was run in its terminal automatically — it will pick the message up shortly.`,
+  attachRelaying: (name) =>
+    `Delivered to "${name}". It wasn't monitoring WeChat, so a background Claude is telling it to attach (about 20 seconds).`,
   attachRequested: (name) =>
     `Delivered to "${name}". It wasn't monitoring WeChat, so it has been asked to attach: a session that is working attaches at its next step; an idle one outside tmux attaches the next time it does anything.`,
   bindingCleared: "The bound session closed; auto-unbound and delivered this message via default routing.",

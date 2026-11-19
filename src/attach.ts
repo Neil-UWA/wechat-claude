@@ -4,17 +4,19 @@
 // user, sending from their phone, cannot do.
 //
 // Claude Code offers no supported way to hand an interactive session a prompt
-// from outside, so there are two routes, tried in this order:
+// from outside, so there are three routes, tried in this order:
 //
 // 1. The session runs inside tmux and sits idle at its prompt: type `/wechat`
-//    into its pane. Only when idle — with a dialog open (a permission prompt),
-//    the Enter would answer the dialog instead.
-// 2. Anything else: leave an attach request on disk. The hook installed by
-//    `wechat-claude setup` (attach-hook.ts) runs in every session on each tool
-//    call and at the end of each turn; in the session the request names, it
-//    tells Claude to start the watcher. A busy session therefore attaches
-//    within one tool call. An idle session outside tmux has nothing running,
-//    so it attaches when it next does anything.
+//    into its pane. Free and instant. Only when idle — with a dialog open (a
+//    permission prompt), the Enter would answer the dialog.
+// 2. The session has a messaging socket: a headless `claude -p` sends it the
+//    instruction with SendMessage (relay.ts). Reaches idle and busy sessions
+//    alike, at the cost of one small model call.
+// 3. The relay is unavailable or failed: leave an attach request on disk. The
+//    hook installed by `wechat-claude setup` (attach-hook.ts) runs in every
+//    session on each tool call and at the end of each turn; in the session the
+//    request names, it tells Claude to attach. An idle session picks it up the
+//    next time it does anything.
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -22,8 +24,10 @@ import {
   parentPids,
   readClaudeSession,
 } from "./claude-sessions.js";
+import { attachInstruction } from "./attach-hook.js";
 import { isMonitoring } from "./monitoring.js";
 import { ATTACH_DIR, CONFIG_FILE } from "./paths.js";
+import { isSocketPath, relayMessage } from "./relay.js";
 import type { SessionInfo } from "./sessions.js";
 import { hasTmux, paneIdOf, panePid, typeIntoPane } from "./tmux.js";
 
@@ -40,6 +44,9 @@ export type AttachOutcome =
   // Already typed or requested moments ago; the session is still starting up.
   | { kind: "pending" }
   | { kind: "typed"; pane: string }
+  // A relay is on its way; `done` settles with whether it was delivered (a
+  // failed relay has already fallen back to an attach request by then).
+  | { kind: "relaying"; done: Promise<boolean> }
   | { kind: "requested" }
   // Registered by an older build that did not record its Claude pid, so
   // neither route can find the session.
@@ -188,6 +195,7 @@ export type AttachDeps = {
   readRecord: (claudePid: number) => ClaudeSessionRecord | undefined;
   typablePane: (rec: ClaudeSessionRecord) => string | undefined;
   typeIntoPane: (pane: string, text: string) => string | null;
+  relay: (socketPath: string, message: string) => Promise<boolean>;
   writeRequest: (req: AttachRequest) => void;
   now: () => number;
   attempts: Map<string, number>;
@@ -199,6 +207,7 @@ const defaultDeps: AttachDeps = {
   readRecord: (pid) => readClaudeSession(pid),
   typablePane: (rec) => typablePane(rec),
   typeIntoPane,
+  relay: (socket, message) => relayMessage(socket, message),
   writeRequest: (req) => writeAttachRequest(req),
   now: Date.now,
   attempts: recentAttempts,
@@ -221,11 +230,23 @@ export function attachSession(
   if (pane && deps.typeIntoPane(pane, "/wechat") === null) {
     return { kind: "typed", pane };
   }
-  deps.writeRequest({
+  const request: AttachRequest = {
     sessionId: session.id,
     claudePid: session.claudePid,
     name: session.name,
     requestedAt: now,
-  });
+  };
+  const socket = rec?.messagingSocketPath;
+  if (socket && isSocketPath(socket)) {
+    const done = deps
+      .relay(socket, attachInstruction(session.name))
+      .catch(() => false)
+      .then((ok) => {
+        if (!ok) deps.writeRequest(request);
+        return ok;
+      });
+    return { kind: "relaying", done };
+  }
+  deps.writeRequest(request);
   return { kind: "requested" };
 }
