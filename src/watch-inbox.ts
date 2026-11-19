@@ -18,6 +18,7 @@ import {
   healthTransition,
   readDeliveryHealth,
 } from "./health.js";
+import { clearAttachRequest } from "./attach.js";
 import { clearHeartbeat, touchHeartbeat } from "./monitoring.js";
 import { consumeNudge } from "./nudge.js";
 import { INBOX_DIR, NUDGE_DIR, SESSIONS_DIR } from "./paths.js";
@@ -91,6 +92,8 @@ process.on("SIGINT", () => process.exit(0));
 process.on("SIGTERM", () => process.exit(0));
 
 touchHeartbeat(sessionId);
+// Attached now; an outstanding request would only tell Claude to attach twice.
+clearAttachRequest(sessionId);
 checkInbox();
 
 // Event-driven: react as soon as the daemon writes the inbox file.

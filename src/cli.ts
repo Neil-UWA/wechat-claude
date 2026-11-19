@@ -25,8 +25,11 @@ import {
 } from "./daemon-control.js";
 import { type McpRegistration, classifyMcpRegistration } from "./utils.js";
 import {
+  attachHookCommand,
+  installAttachHook,
   installRenameHook,
   installWechatSettings,
+  removeAttachHook,
   removeRenameHook,
   renameHookCommand,
 } from "./claude-settings.js";
@@ -34,6 +37,7 @@ import * as launchd from "./launchd.js";
 
 const SERVER_JS = fileURLToPath(new URL("./server.js", import.meta.url));
 const RENAME_HOOK_JS = fileURLToPath(new URL("./rename-hook.js", import.meta.url));
+const ATTACH_HOOK_JS = fileURLToPath(new URL("./attach-hook.js", import.meta.url));
 
 function out(s: string): void {
   process.stdout.write(s + "\n");
@@ -133,6 +137,28 @@ function installSessionRenameHook(): boolean {
   return true;
 }
 
+// Lets a WeChat message sent to a session that is not monitoring attach WeChat
+// to it (see attach.ts).
+function installSessionAttachHook(): boolean {
+  const command = attachHookCommand(ATTACH_HOOK_JS);
+  switch (installAttachHook(command)) {
+    case "installed":
+      out("  ✓ a message sent to a session that isn't monitoring now attaches WeChat to it (hook added to ~/.claude/settings.json)");
+      break;
+    case "updated":
+      out("  ✓ auto-attach hook repointed at this install");
+      break;
+    case "already":
+      out("  ✓ auto-attach hook already installed");
+      break;
+    case "failed":
+      out("  ! could not update ~/.claude/settings.json — sessions outside tmux will not attach WeChat on their own");
+      out(`    Add PostToolUse and Stop hooks running: ${command}`);
+      return false;
+  }
+  return true;
+}
+
 // Lets a monitoring session work unattended: its WeChat tools skip the auto
 // mode classifier, and messages relayed from another session are delivered
 // instead of held for a review nobody is there to do.
@@ -163,6 +189,7 @@ function configure(): boolean {
     registerMcpServer(),
     installSlashCommand(),
     installSessionRenameHook(),
+    installSessionAttachHook(),
     installUnattendedSettings(),
   ];
   return results.every(Boolean);
@@ -178,6 +205,20 @@ function removeSessionRenameHook(): number {
       return 0;
     case "failed":
       out("  ! could not update ~/.claude/settings.json — remove the UserPromptSubmit hook running rename-hook.js by hand");
+      return 1;
+  }
+}
+
+function removeSessionAttachHook(): number {
+  switch (removeAttachHook()) {
+    case "removed":
+      out("  ✓ auto-attach hook removed from ~/.claude/settings.json");
+      return 0;
+    case "absent":
+      out("  • no auto-attach hook was installed");
+      return 0;
+    case "failed":
+      out("  ! could not update ~/.claude/settings.json — remove the PostToolUse and Stop hooks running attach-hook.js by hand");
       return 1;
   }
 }
@@ -344,7 +385,7 @@ function usage(): void {
   out("  wechat-claude daemon uninstall   remove the launchd service");
   out("  wechat-claude daemon status      check daemon / service state");
   out("  wechat-claude daemon log         tail the daemon log");
-  out("  wechat-claude remove-hook        remove the /wechat session-rename hook (before uninstalling)\n");
+  out("  wechat-claude remove-hook        remove the hooks setup added to ~/.claude/settings.json (before uninstalling)\n");
   out("After setup: start the daemon, then type /wechat in a Claude Code session.");
 }
 
@@ -391,7 +432,7 @@ async function main(): Promise<void> {
       if (!configure()) process.exitCode = 1;
       break;
     case "remove-hook":
-      process.exitCode = removeSessionRenameHook();
+      process.exitCode = Math.max(removeSessionRenameHook(), removeSessionAttachHook());
       break;
     case "daemon":
       process.exitCode = await daemon(process.argv[3]);
