@@ -46,6 +46,20 @@ describe("relaySucceeded", () => {
     expect(relaySucceeded(stream([prose, { type: "result", subtype: "success" }]))).toBe(false);
   });
 
+  it("counts a non-error result in another shape as delivered", () => {
+    expect(relaySucceeded(stream([sendUse, resultFor("t1", "Message sent to uds:/tmp/x.sock")]))).toBe(true);
+    expect(relaySucceeded(stream([sendUse, resultFor("t1", '{"msg_id":"abc"}')]))).toBe(true);
+  });
+
+  it("is false for an error result, whatever it says", () => {
+    const err = {
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: "Message sent" }] },
+    };
+    expect(relaySucceeded(stream([sendUse, err]))).toBe(false);
+    expect(relaySucceeded(stream([sendUse, resultFor("t1", '{"error":"no such session"}')]))).toBe(false);
+  });
+
   it("survives junk lines and empty output", () => {
     expect(relaySucceeded("")).toBe(false);
     expect(relaySucceeded("Warning: something\n{not json")).toBe(false);
@@ -66,12 +80,14 @@ describe("isSocketPath", () => {
 });
 
 describe("relayArgs", () => {
-  it("allows SendMessage only, loads no MCP servers, and uses a cheap model", () => {
+  it("offers SendMessage as the only tool, in default permission mode, with no MCP servers", () => {
     const args = relayArgs(SOCK, "hi");
+    expect(args[args.indexOf("--tools") + 1]).toBe("SendMessage");
     expect(args[args.indexOf("--allowedTools") + 1]).toBe("SendMessage");
+    expect(args[args.indexOf("--permission-mode") + 1]).toBe("default");
     expect(args).toContain("--strict-mcp-config");
     expect(args[args.indexOf("--mcp-config") + 1]).toBe('{"mcpServers":{}}');
-    expect(args[args.indexOf("--model") + 1]).toMatch(/haiku/);
+    expect(args).not.toContain("--model");
     expect(args.at(-1)).toBe(relayPrompt(SOCK, "hi"));
     expect(args.at(-2)).toBe("--");
   });

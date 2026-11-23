@@ -314,10 +314,13 @@ to it for you, so you don't have to go back to that terminal and type `/wechat`:
 - **The session runs in tmux and sits idle at its prompt**: the daemon types
   `/wechat` and Enter into its pane; it attaches within seconds and costs no
   quota. Only when idle — with a permission dialog open, the Enter would answer
-  the dialog. The daemon also checks the pane really runs that Claude process,
+  the dialog — and only when the input box is empty: with an unsent draft
+  there, the Enter would submit it with `/wechat` stuck on the end, so the next
+  route is used instead. The daemon also checks the pane really runs that Claude process,
   so it never types into the wrong one.
 - **Anything else** (not in tmux, or busy): the daemon starts a short headless
-  `claude -p` (Haiku, allowed only the `SendMessage` tool, no MCP servers loaded)
+  `claude -p` (your default model, given only the `SendMessage` tool, in the
+  default permission mode, no MCP servers loaded)
   that tells the session to attach over Claude Code's own cross-session
   messaging. It wakes idle sessions too; about 20 seconds and a few cents each.
   It is addressed by the session's messaging socket, not its name, so duplicate
@@ -325,9 +328,12 @@ to it for you, so you don't have to go back to that terminal and type `/wechat`:
 - **Fallback**: if that relay fails (no `claude` binary, usage limit reached,
   …), the daemon leaves an attach request for the hook `wechat-claude setup`
   installs (`PostToolUse` + `Stop`): the session is told to attach at its next
-  tool call or before it stops.
+  tool call (a subagent's doesn't count) or before it stops, and the daemon
+  tells you so on WeChat. A request lapses after 6 hours, or when its session
+  exits.
 
-The daemon's reply says which route was taken. A session is not triggered twice
+The daemon's reply says which route was taken; messages sent while an attach
+is still under way say so. A session is not triggered twice
 within 2 minutes. To turn this off and get just the warning, add
 `"autoAttach": false` to `~/.claude/wechat/config.json`. The relay needs
 `crossSessionInbound` set to `"accept"` (`setup` sets it); otherwise its message

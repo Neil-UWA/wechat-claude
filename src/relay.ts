@@ -12,8 +12,6 @@ import os from "node:os";
 import path from "node:path";
 import { resolveClaudeBin } from "./usage.js";
 
-// One SendMessage call needs no reasoning: the cheapest model does it.
-export const RELAY_MODEL = "claude-haiku-4-5-20251001";
 export const RELAY_TIMEOUT_MS = 120_000;
 
 // A socket path from Claude Code's session record, safe to quote in a prompt.
@@ -41,6 +39,7 @@ type ContentBlock = {
   name?: unknown;
   tool_use_id?: unknown;
   content?: unknown;
+  is_error?: unknown;
 };
 
 function blocks(e: StreamEvent): ContentBlock[] {
@@ -61,10 +60,13 @@ function resultText(content: unknown): string {
 }
 
 // Whether a SendMessage call in the run's stream-json output reported success.
-// The model's own prose is not trusted: only the tool's result counts.
+// The model's own prose is not trusted: only the tool's result counts. Today
+// that result is JSON with `success` (`{"success":true,"message":…}`); should
+// its shape change, a result that isn't an error and doesn't say
+// `success: false` still counts as delivered rather than failing every relay.
 export function relaySucceeded(streamJson: string): boolean {
   const sendIds = new Set<string>();
-  const results: { id: string; text: string }[] = [];
+  const results: { id: string; text: string; error: boolean }[] = [];
   for (const line of streamJson.split("\n")) {
     let e: StreamEvent;
     try {
@@ -77,22 +79,32 @@ export function relaySucceeded(streamJson: string): boolean {
         sendIds.add(b.id);
       }
       if (e.type === "user" && b.type === "tool_result" && typeof b.tool_use_id === "string") {
-        results.push({ id: b.tool_use_id, text: resultText(b.content) });
+        results.push({ id: b.tool_use_id, text: resultText(b.content), error: b.is_error === true });
       }
     }
   }
-  return results.some(({ id, text }) => {
-    if (!sendIds.has(id)) return false;
+  return results.some(({ id, text, error }) => {
+    if (!sendIds.has(id) || error) return false;
+    let parsed: unknown;
     try {
-      return (JSON.parse(text) as { success?: unknown }).success === true;
+      parsed = JSON.parse(text);
     } catch {
-      return false;
+      return text.trim() !== "";
     }
+    if (typeof parsed !== "object" || parsed === null) return text.trim() !== "";
+    const r = parsed as { success?: unknown; error?: unknown };
+    if ("success" in r) return r.success === true;
+    return r.error === undefined;
   });
 }
 
 // `--strict-mcp-config` with an empty map keeps this package's own MCP server
 // out of the relay, which would otherwise register a phantom WeChat session.
+// `--tools SendMessage` is what confines the run to that one tool: on its own,
+// `--allowedTools` only pre-approves SendMessage and leaves every other tool
+// in place, to be used under whatever allow rules or `defaultMode` the user's
+// settings grant. `--permission-mode default` keeps a user-wide
+// bypassPermissions from applying here. The model is the user's default.
 export function relayArgs(socketPath: string, message: string): string[] {
   return [
     "-p",
@@ -101,13 +113,15 @@ export function relayArgs(socketPath: string, message: string): string[] {
     "--verbose",
     "--max-turns",
     "3",
-    "--model",
-    RELAY_MODEL,
     "--strict-mcp-config",
     "--mcp-config",
     '{"mcpServers":{}}',
+    "--tools",
+    "SendMessage",
     "--allowedTools",
     "SendMessage",
+    "--permission-mode",
+    "default",
     "--",
     relayPrompt(socketPath, message),
   ];

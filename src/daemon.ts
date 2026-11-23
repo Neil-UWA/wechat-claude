@@ -14,7 +14,7 @@ import {
   getBinding,
   setBinding,
 } from "./bindings.js";
-import { attachSession } from "./attach.js";
+import { type AttachOutcome, attachSession, pruneAttachRequests } from "./attach.js";
 import { clearHeartbeat, isMonitoring } from "./monitoring.js";
 import { nudgeSession } from "./nudge.js";
 import { lastReplyAt, pruneReplies } from "./replies.js";
@@ -779,17 +779,35 @@ function noteUsageLimit(client: ILinkClient, userId: string): void {
 // A message just landed in a session that may not be running a watcher: get
 // WeChat attached to it rather than only warning that nobody will read it.
 // `unattachedWarn` is the old warning, still owed when attaching is off or
-// impossible.
+// impossible. Fire-and-forget: the pane checks are asynchronous, so routing
+// carries on meanwhile.
 function attachOnDelivery(
   target: SessionInfo,
   unattachedWarn: string,
   sendReply: (reply: string) => void
 ): void {
+  void attachSession(target)
+    .then((outcome) => reportAttach(target, outcome, unattachedWarn, sendReply))
+    .catch((err) => {
+      log(`Auto-attach for ${target.name} failed: ${err}`);
+      sendReply(unattachedWarn);
+    });
+}
+
+function reportAttach(
+  target: SessionInfo,
+  outcome: AttachOutcome,
+  unattachedWarn: string,
+  sendReply: (reply: string) => void
+): void {
   const m = t();
-  const outcome = attachSession(target);
   switch (outcome.kind) {
     case "monitoring":
+      return;
     case "pending":
+      // The first attempt may not have taken (a typed /wechat that didn't
+      // register, a failed relay): every message still says where it stands.
+      sendReply(m.attachPending(target.name, Math.max(1, Math.round((Date.now() - outcome.since) / 1000))));
       return;
     case "typed":
       log(`Auto-attach: typed /wechat into tmux pane ${outcome.pane} of ${target.name} (${target.id})`);
@@ -798,13 +816,14 @@ function attachOnDelivery(
     case "relaying":
       log(`Auto-attach: relaying an attach message to ${target.name} (${target.id})`);
       sendReply(m.attachRelaying(target.name));
-      void outcome.done.then((ok) =>
-        log(
-          ok
-            ? `Auto-attach: relay to ${target.name} delivered`
-            : `Auto-attach: relay to ${target.name} failed; left an attach request instead`
-        )
-      );
+      void outcome.done.then((ok) => {
+        if (ok) {
+          log(`Auto-attach: relay to ${target.name} delivered`);
+          return;
+        }
+        log(`Auto-attach: relay to ${target.name} failed; left an attach request instead`);
+        if (!isMonitoring(target.id)) sendReply(m.attachRelayFailed(target.name));
+      });
       return;
     case "requested":
       log(`Auto-attach: left an attach request for ${target.name} (${target.id})`);
@@ -1263,7 +1282,11 @@ async function main(): Promise<void> {
   startRunWatcher(client);
   startUsageWatcher(client);
   pruneReplies(listSessions().map((s) => s.id));
-  setInterval(() => pruneReplies(listSessions().map((s) => s.id)), 30 * 60_000);
+  pruneAttachRequests();
+  setInterval(() => {
+    pruneReplies(listSessions().map((s) => s.id));
+    pruneAttachRequests();
+  }, 30 * 60_000);
 
   log(`Daemon started (pid ${process.pid}). Polling WeChat...`);
 

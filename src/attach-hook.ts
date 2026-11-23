@@ -22,11 +22,21 @@ export type HookInput = {
   session_id?: unknown;
   tool_name?: unknown;
   stop_hook_active?: unknown;
+  // Set when the event comes from a subagent's tool call. Those carry the
+  // parent's session_id, but the instruction must reach the main thread.
+  agent_id?: unknown;
 };
+
+// A routing name only has to be whitespace-free (validateSessionName), so it
+// may hold quotes or the relay's `<<<`/`>>>` markers. Only letters, digits and
+// `._-` reach the instruction, which the relay quotes inside its prompt.
+export function safeName(name: string): string {
+  return name.replace(/[^\p{L}\p{N}._-]/gu, "_").slice(0, 64) || "_";
+}
 
 export function attachInstruction(name: string): string {
   return [
-    `A WeChat message was sent to this session (WeChat routing name "${name}"), but this session is not monitoring WeChat, so the message is sitting unread.`,
+    `A WeChat message was sent to this session (WeChat routing name "${safeName(name)}"), but this session is not monitoring WeChat, so the message is sitting unread.`,
     "Attach WeChat now: invoke the `wechat` skill (the /wechat command) with the Skill tool. If it is not available, do its steps yourself — call wechat_status, start a persistent Monitor with the watcher command it prints, then call wechat_get_messages.",
     "Then handle the message and reply with wechat_send_text. If you were in the middle of a task, attach first and carry on with the task afterwards.",
   ].join(" ");
@@ -46,11 +56,14 @@ export function hookOutput(event: string, name: string): string | undefined {
 
 // Whether this invocation may act at all. A session already talking to the
 // WeChat tools is attaching (or answering) on its own; a Stop that is itself
-// the continuation of a blocked stop must not be blocked again.
+// the continuation of a blocked stop must not be blocked again; a subagent's
+// tool call must not consume the request — the subagent can't keep a watcher
+// running, and the main thread would never hear of it.
 export function shouldAct(input: HookInput): boolean {
   const event = input.hook_event_name;
   if (event !== "PostToolUse" && event !== "Stop") return false;
   if (typeof input.session_id !== "string") return false;
+  if (typeof input.agent_id === "string" && input.agent_id !== "") return false;
   if (typeof input.tool_name === "string" && input.tool_name.startsWith("mcp__wechat__")) {
     return false;
   }
