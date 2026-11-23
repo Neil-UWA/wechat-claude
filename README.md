@@ -83,8 +83,8 @@ wechat-claude daemon           # 前台运行 / 交给你自己的进程管理�
 | `/help` | 显示命令帮助 |
 | *（无前缀）* | 发给最近活跃的**监控中** session（没有的话退回到最近活跃的那个） |
 
-**投递反馈**：如果消息落到了一个没在监控 inbox 的 session，daemon 会立刻警告你；如果一条
-已投递的消息 2 分钟后仍未被读取，它会再发一条提醒。
+**投递反馈**：如果消息落到了一个没在监控 inbox 的 session，daemon 会[自动给它挂上微信](#自动挂上微信)
+并告诉你走的是哪条路；如果一条已投递的消息 2 分钟后仍未被读取，它会再发一条提醒。
 
 ### 用量上限（session 集体不回复）
 
@@ -217,7 +217,7 @@ wechat-claude daemon install     # 装成 launchd 服务（macOS）
 wechat-claude daemon uninstall   # 移除 launchd 服务
 wechat-claude daemon status      # 查看 daemon / 服务状态
 wechat-claude daemon log         # 跟踪 daemon 日志
-wechat-claude remove-hook        # 移除 /wechat 改名用的 hook（卸载前跑）
+wechat-claude remove-hook        # 移除 setup 加的 hook（改名、自动挂上；卸载前跑）
 ```
 
 在 git 检出里，同样的命令也有对应的 npm script（`npm run daemon:install` 等），它们只是
@@ -265,6 +265,28 @@ session 发到微信的每条回复（`wechat_send_text`，以及 `wechat_send_i
 的兜底线索：引用里带着尾注，daemon 就一定认得出是谁说的。多个 session 往同一个聊天里
 回复时，不用先 `/ls` 再猜是谁说的。不想要的话在 `~/.claude/wechat/config.json` 里加
 `"replyFooter": false`。
+
+## 自动挂上微信
+
+用 `/s`、`/use` 绑定、引用回复或默认路由把消息发给一个**没开 `/wechat`** 的 session 时，
+daemon 会替你把微信挂上，不用再回到那个终端手动敲 `/wechat`：
+
+- **session 在 tmux 里、且正空闲在输入框**：daemon 直接往它的 tmux pane 里敲 `/wechat`
+  并回车，几秒内就挂上，不花额度。只在空闲时才敲 —— 弹着权限确认框时回车会被当成"确认"；
+  输入框里有没发出去的草稿时也不敲（否则回车会把草稿连同 `/wechat` 一起发出去），改走下一条路。
+  daemon 还会核对这个 pane 确实跑着那个 Claude 进程，不会敲错窗口。
+- **其它情况**（不在 tmux 里，或正在干活）：daemon 起一个后台的非交互 `claude -p`（用你的默认模型，
+  只给它 `SendMessage` 一个工具、按默认权限模式运行，不加载任何 MCP server），用 Claude Code 自己的跨 session
+  消息通道通知那个 session 挂上微信。闲着的 session 也会被唤醒，约 20 秒，每次大约几美分。
+  按 session 的消息 socket 寻址，不按名字，重名也不会发错。
+- **兜底**：通知没发出去（找不到 `claude`、额度用完等）时，daemon 留一个挂载请求，由
+  `wechat-claude setup` 装的 hook（`PostToolUse` + `Stop`）在那个 session 里接手：它下一次
+  调用工具、或干完活要停下时会被要求先挂上（subagent 的工具调用不算）。这时 daemon 也会在微信里告诉你。
+  请求 6 小时后、或那个 session 退出后自动作废。
+
+daemon 的回复会说明走的是哪条路。2 分钟内同一个 session 不会重复触发，期间再发过去的消息会提示它还在挂载中。不想要的话在
+`~/.claude/wechat/config.json` 里加 `"autoAttach": false`，恢复为只发警告。后台通知要求
+`crossSessionInbound` 为 `"accept"`（`setup` 会设置），否则消息会等人工审核。
 
 ## 引用回复
 
@@ -367,7 +389,7 @@ wechat-claude 会响应聊天消息、在你的机器上执行代码。完整威
 ## 卸载
 
 ```bash
-wechat-claude remove-hook       # 移除 /wechat 改名用的 hook（~/.claude/settings.json）
+wechat-claude remove-hook       # 移除 setup 加的 hook（改名、自动挂上；~/.claude/settings.json）
 wechat-claude daemon uninstall  # 移除 launchd 服务（macOS）
 claude mcp remove wechat        # 注销 MCP server
 rm ~/.claude/commands/wechat.md # 删除斜杠命令

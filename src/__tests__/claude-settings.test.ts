@@ -4,8 +4,11 @@ import path from "node:path";
 import os from "node:os";
 import {
   WECHAT_ALLOW_RULES,
+  attachHookCommand,
+  installAttachHook,
   installRenameHook,
   installWechatSettings,
+  removeAttachHook,
   removeRenameHook,
   renameHookCommand,
   wechatToolsAllowed,
@@ -181,5 +184,53 @@ describe("installWechatSettings", () => {
     expect(wechatToolsAllowed(FILE)).toBe(false);
     installWechatSettings(FILE);
     expect(wechatToolsAllowed(FILE)).toBe(true);
+  });
+});
+
+describe("installAttachHook", () => {
+  const ATTACH_CMD = attachHookCommand("/opt/new/dist/attach-hook.js");
+
+  beforeEach(() => {
+    try {
+      fs.unlinkSync(FILE);
+    } catch {}
+  });
+
+  it("registers the hook for both PostToolUse and Stop", () => {
+    expect(installAttachHook(ATTACH_CMD, FILE)).toBe("installed");
+    const s = read();
+    expect(s.hooks.PostToolUse).toEqual([{ hooks: [{ type: "command", command: ATTACH_CMD }] }]);
+    expect(s.hooks.Stop).toEqual([{ hooks: [{ type: "command", command: ATTACH_CMD }] }]);
+    expect(installAttachHook(ATTACH_CMD, FILE)).toBe("already");
+  });
+
+  it("repoints an entry from another install instead of adding a second", () => {
+    installAttachHook(attachHookCommand("/old/dist/attach-hook.js"), FILE);
+    expect(installAttachHook(ATTACH_CMD, FILE)).toBe("updated");
+    const s = read();
+    expect(s.hooks.PostToolUse).toHaveLength(1);
+    expect(s.hooks.PostToolUse[0].hooks[0].command).toBe(ATTACH_CMD);
+    expect(s.hooks.Stop[0].hooks[0].command).toBe(ATTACH_CMD);
+  });
+
+  it("lives alongside the rename hook and the user's own hooks", () => {
+    fs.writeFileSync(
+      FILE,
+      JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "say done" }] }] } })
+    );
+    installRenameHook(CMD, FILE);
+    installAttachHook(ATTACH_CMD, FILE);
+    expect(removeAttachHook(FILE)).toBe("removed");
+    const s = read();
+    expect(s.hooks.Stop).toEqual([{ hooks: [{ type: "command", command: "say done" }] }]);
+    expect(s.hooks.PostToolUse).toBeUndefined();
+    expect(s.hooks.UserPromptSubmit[0].hooks[0].command).toBe(CMD);
+    expect(removeAttachHook(FILE)).toBe("absent");
+  });
+
+  it("leaves a corrupt settings file alone", () => {
+    fs.writeFileSync(FILE, "{nope");
+    expect(installAttachHook(ATTACH_CMD, FILE)).toBe("failed");
+    expect(fs.readFileSync(FILE, "utf-8")).toBe("{nope");
   });
 });

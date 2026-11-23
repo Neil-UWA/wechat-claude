@@ -13,7 +13,7 @@
 //
 // The file format is Claude Code's, not ours: read defensively and return
 // undefined for anything that doesn't look right.
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,6 +26,14 @@ export type ClaudeSessionRecord = {
   name: string;
   sessionId?: string;
   cwd?: string;
+  // "<session>:@<window>.%<pane>" when the session runs inside tmux — the one
+  // place keystrokes can be delivered to it from outside (see attach.ts).
+  tmux?: string;
+  // Claude Code's own activity state: "idle" (waiting at the prompt), "busy",
+  // "waiting" (a dialog is open), among others.
+  status?: string;
+  // The socket other sessions' SendMessage delivers to (see relay.ts).
+  messagingSocketPath?: string;
 };
 
 export function readClaudeSession(
@@ -49,6 +57,12 @@ export function readClaudeSession(
     name: rec.name,
     sessionId: typeof rec.sessionId === "string" ? rec.sessionId : undefined,
     cwd: typeof rec.cwd === "string" ? rec.cwd : undefined,
+    tmux: typeof rec.tmux === "string" && rec.tmux !== "" ? rec.tmux : undefined,
+    status: typeof rec.status === "string" ? rec.status : undefined,
+    messagingSocketPath:
+      typeof rec.messagingSocketPath === "string" && rec.messagingSocketPath !== ""
+        ? rec.messagingSocketPath
+        : undefined,
   };
 }
 
@@ -156,4 +170,22 @@ export function claudePidForSessionId(
     if (rec?.sessionId === sessionId && isProcessAlive(rec.pid)) return rec.pid;
   }
   return undefined;
+}
+
+// Every process's parent, from one asynchronous `ps -A` (argv array, no
+// shell, time-limited): for walking a process's ancestry off the daemon's
+// message path without one blocking `ps` per generation. Empty on failure.
+export function processParents(timeoutMs: number = 3_000): Promise<Map<number, number>> {
+  return new Promise((resolve) => {
+    execFile("ps", ["-A", "-o", "pid=,ppid="], { timeout: timeoutMs, encoding: "utf-8" }, (err, stdout) => {
+      const out = new Map<number, number>();
+      if (!err && typeof stdout === "string") {
+        for (const line of stdout.split("\n")) {
+          const m = line.trim().match(/^(\d+)\s+(\d+)$/);
+          if (m) out.set(Number(m[1]), Number(m[2]));
+        }
+      }
+      resolve(out);
+    });
+  });
 }

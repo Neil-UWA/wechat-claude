@@ -14,6 +14,7 @@ import {
   getBinding,
   setBinding,
 } from "./bindings.js";
+import { type AttachOutcome, attachSession, pruneAttachRequests } from "./attach.js";
 import { clearHeartbeat, isMonitoring } from "./monitoring.js";
 import { nudgeSession } from "./nudge.js";
 import { lastReplyAt, pruneReplies } from "./replies.js";
@@ -775,6 +776,66 @@ function noteUsageLimit(client: ILinkClient, userId: string): void {
     .catch((err) => log(`Usage-limit note failed: ${err}`));
 }
 
+// A message just landed in a session that may not be running a watcher: get
+// WeChat attached to it rather than only warning that nobody will read it.
+// `unattachedWarn` is the old warning, still owed when attaching is off or
+// impossible. Fire-and-forget: the pane checks are asynchronous, so routing
+// carries on meanwhile.
+function attachOnDelivery(
+  target: SessionInfo,
+  unattachedWarn: string,
+  sendReply: (reply: string) => void
+): void {
+  void attachSession(target)
+    .then((outcome) => reportAttach(target, outcome, unattachedWarn, sendReply))
+    .catch((err) => {
+      log(`Auto-attach for ${target.name} failed: ${err}`);
+      sendReply(unattachedWarn);
+    });
+}
+
+function reportAttach(
+  target: SessionInfo,
+  outcome: AttachOutcome,
+  unattachedWarn: string,
+  sendReply: (reply: string) => void
+): void {
+  const m = t();
+  switch (outcome.kind) {
+    case "monitoring":
+      return;
+    case "pending":
+      // The first attempt may not have taken (a typed /wechat that didn't
+      // register, a failed relay): every message still says where it stands.
+      sendReply(m.attachPending(target.name, Math.max(1, Math.round((Date.now() - outcome.since) / 1000))));
+      return;
+    case "typed":
+      log(`Auto-attach: typed /wechat into tmux pane ${outcome.pane} of ${target.name} (${target.id})`);
+      sendReply(m.attachTyped(target.name));
+      return;
+    case "relaying":
+      log(`Auto-attach: relaying an attach message to ${target.name} (${target.id})`);
+      sendReply(m.attachRelaying(target.name));
+      void outcome.done.then((ok) => {
+        if (ok) {
+          log(`Auto-attach: relay to ${target.name} delivered`);
+          return;
+        }
+        log(`Auto-attach: relay to ${target.name} failed; left an attach request instead`);
+        if (!isMonitoring(target.id)) sendReply(m.attachRelayFailed(target.name));
+      });
+      return;
+    case "requested":
+      log(`Auto-attach: left an attach request for ${target.name} (${target.id})`);
+      sendReply(m.attachRequested(target.name));
+      return;
+    case "disabled":
+    case "unreachable":
+      sendReply(unattachedWarn);
+      return;
+  }
+}
+
 function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   const text = msg.text.trim();
   const lang = getLang();
@@ -1101,9 +1162,7 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
     const routed: PendingMessage = { ...msg, text: withQuote(message) };
     writeToInbox(target.id, routed);
     trackDelivery(routed, target.id, target.name);
-    if (!isMonitoring(target.id)) {
-      sendReply(m.deliveredUnmonitored(target.name));
-    }
+    attachOnDelivery(target, m.deliveredUnmonitored(target.name), sendReply);
     noteUsageLimit(client, msg.fromUserId);
     markTyping(msg.fromUserId);
     client.startTypingKeepAlive(msg.fromUserId, () => isTypingActive(msg.fromUserId));
@@ -1144,15 +1203,13 @@ function routeMessage(client: ILinkClient, msg: PendingMessage): void {
   const delivered: PendingMessage = { ...msg, text: withQuote(msg.text) };
   writeToInbox(target.id, delivered);
   trackDelivery(delivered, target.id, target.name);
-  if (!isMonitoring(target.id)) {
-    // A quote picked this session out, so the honest warning is about that one
-    // session, not about nobody monitoring anything.
-    sendReply(
-      quoted
-        ? m.deliveredUnmonitored(target.name)
-        : m.deliveredNoneMonitored(target.name)
-    );
-  }
+  // A quote picked this session out, so the honest warning is about that one
+  // session, not about nobody monitoring anything.
+  attachOnDelivery(
+    target,
+    quoted ? m.deliveredUnmonitored(target.name) : m.deliveredNoneMonitored(target.name),
+    sendReply
+  );
   noteUsageLimit(client, msg.fromUserId);
   markTyping(msg.fromUserId);
   client.startTypingKeepAlive(msg.fromUserId);
@@ -1225,7 +1282,11 @@ async function main(): Promise<void> {
   startRunWatcher(client);
   startUsageWatcher(client);
   pruneReplies(listSessions().map((s) => s.id));
-  setInterval(() => pruneReplies(listSessions().map((s) => s.id)), 30 * 60_000);
+  pruneAttachRequests();
+  setInterval(() => {
+    pruneReplies(listSessions().map((s) => s.id));
+    pruneAttachRequests();
+  }, 30 * 60_000);
 
   log(`Daemon started (pid ${process.pid}). Polling WeChat...`);
 
